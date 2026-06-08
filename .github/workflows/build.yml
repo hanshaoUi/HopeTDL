@@ -22,7 +22,7 @@ jobs:
         include:
           - name: macOS arm64
             os: macos-latest
-            build_cmd: npm exec vite -- build && CSC_IDENTITY_AUTO_DISCOVERY=false npm exec electron-builder -- --mac
+            build_cmd: npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac
             artifact_name: HopeTDL-macOS
             artifact_path: |
               release/*.dmg
@@ -30,7 +30,7 @@ jobs:
 
           - name: Windows x64
             os: windows-latest
-            build_cmd: npm exec vite -- build && npm exec electron-builder -- --win
+            build_cmd: npm run build && npx electron-builder --win
             artifact_name: HopeTDL-Windows
             artifact_path: |
               release/*.exe
@@ -47,7 +47,14 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install --include=dev
+
+      - name: Verify local build tools
+        shell: bash
+        run: |
+          npm ls vite @vitejs/plugin-vue electron-builder
+          npx --no-install vite --version
+          npx --no-install electron-builder --version
 
       - name: Build app
         shell: bash
