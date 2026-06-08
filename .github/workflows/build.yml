@@ -22,7 +22,7 @@ jobs:
         include:
           - name: macOS arm64
             os: macos-latest
-            build_cmd: CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:mac
+            build_cmd: npm exec vite -- build && CSC_IDENTITY_AUTO_DISCOVERY=false npm exec electron-builder -- --mac
             artifact_name: HopeTDL-macOS
             artifact_path: |
               release/*.dmg
@@ -30,7 +30,7 @@ jobs:
 
           - name: Windows x64
             os: windows-latest
-            build_cmd: npm run build:win
+            build_cmd: npm exec vite -- build && npm exec electron-builder -- --win
             artifact_name: HopeTDL-Windows
             artifact_path: |
               release/*.exe
@@ -47,7 +47,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Build app
         shell: bash
