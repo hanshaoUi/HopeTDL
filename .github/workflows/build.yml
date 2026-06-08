@@ -41,7 +41,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Workflow marker
-        run: echo "HopeTDL workflow pnpm-v2: no npm install, no verify-local-build-tools"
+        run: |
+          echo "HopeTDL workflow pnpm-v2: no npm install, no verify-local-build-tools"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
