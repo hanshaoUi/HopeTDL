@@ -1,0 +1,455 @@
+<script setup>
+import { ref, computed, onMounted, watch } from 'vue'
+import { ElMessage } from 'element-plus'
+import { commandText, runTask } from '../utils'
+import CommandPreview from '../components/CommandPreview.vue'
+import ChatSelect from '../components/ChatSelect.vue'
+import { appState } from '../main.js'
+import { chatId as getChatId, chatTitle as getChatTitle, findChatByValue } from '../chatCache'
+import { touchRecentChat } from '../historyStore'
+
+const chat = ref('')
+const type = ref('id')
+const input = ref('')
+const all = ref(true)
+const raw = ref(false)
+const output = ref('')
+const selectedSourceChat = ref(null)
+const pendingExportTaskId = ref('')
+const pendingExportRecord = ref(null)
+const autoOutput = ref(true)
+
+const HISTORY_KEY = 'hopetdl.export.memory.v1'
+const exportMemory = ref({ last: null, chats: {}, records: [] })
+
+const nsKey = computed(() => String(appState.config?.ns || 'default'))
+const chatKey = computed(() => String(chat.value || '').trim())
+const chatLastRecord = computed(() => chatKey.value ? getChatMemory(chatKey.value) : null)
+const recentRecords = computed(() => exportMemory.value.records?.slice(0, 8) || [])
+
+function normalizeChatKey(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  // 兼容 tdl / Telegram 中同一个群有时显示为 174xxx、有时显示为 -174xxx 的情况。
+  // 不处理 @username，只对数字 ID 做符号归一。
+  if (raw.startsWith('@')) return raw.toLowerCase()
+  return raw.replace(/^-/, '')
+}
+
+function chatKeyCandidates(value) {
+  const raw = String(value || '').trim()
+  const normalized = normalizeChatKey(raw)
+  const list = [raw]
+  if (normalized && normalized !== raw) list.push(normalized)
+  if (normalized && !normalized.startsWith('@')) {
+    list.push('-' + normalized)
+    list.push('-100' + normalized)
+  }
+  return Array.from(new Set(list.filter(Boolean)))
+}
+
+function getChatMemory(value) {
+  const chats = exportMemory.value.chats || {}
+  for (const key of chatKeyCandidates(value)) {
+    if (chats[key]) return chats[key]
+  }
+
+  // 如果 chats 索引里没有，继续从最近记录里倒查，避免旧版本/误操作覆盖导致找不到。
+  const normalized = normalizeChatKey(value)
+  const records = exportMemory.value.records || []
+  return records.find(item =>
+    normalizeChatKey(item.chat) === normalized &&
+    (item.input || item.type === 'all')
+  ) || null
+}
+
+function requiresInput() {
+  // 最近 N 条必须填写 -i；按消息 ID 可以留空执行全量导出，完成后会自动从导出 JSON 里分析最大消息 ID，生成下一次的 -i。
+  return type.value === 'last'
+}
+
+function canAutoAnalyzeNextInput() {
+  return type.value === 'id' && !String(input.value || '').trim()
+}
+
+function joinPath(dir, fileName) {
+  if (!dir) return fileName
+  const clean = String(dir).replace(/[\\/]+$/, '')
+  const sep = clean.includes('\\') ? '\\' : '/'
+  return `${clean}${sep}${fileName}`
+}
+
+function safeName(value, fallback = 'chat') {
+  const text = String(value || fallback).trim() || fallback
+  return text.replace(/[\\/:*?"<>|#%{}~&]/g, '_').replace(/\s+/g, '_').slice(0, 80)
+}
+
+function timestampForFile() {
+  const d = new Date()
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`
+}
+
+function inputToken() {
+  const val = String(input.value || '').trim()
+  if (!val) return type.value === 'id' ? 'full' : 'none'
+  return val.replace(/9223372036854775807/g, 'latest').replace(/[,\s]+/g, '-').replace(/[^0-9a-zA-Z_@.-]/g, '_')
+}
+
+function sourceChatRow() {
+  return selectedSourceChat.value || findChatByValue(chat.value, appState.cachedChats || [])
+}
+
+async function defaultOutputFile() {
+  const baseDir = appState.config?.defaultDownloadDir || await window.tdlApi.getDefaultOutputDir()
+  const row = sourceChatRow()
+  const title = getChatTitle(row) || chat.value || 'chat'
+  const id = getChatId(row) || chat.value || 'unknown'
+  const folder = safeName(`${title}_${id}`)
+  const name = `export_${safeName(type.value)}_${safeName(inputToken())}_${timestampForFile()}.json`
+  return joinPath(joinPath(baseDir, folder), name)
+}
+
+async function updateSmartOutput({ force = false } = {}) {
+  if (!force && !autoOutput.value) return
+  output.value = await defaultOutputFile()
+}
+
+function handleSourceSelect(row) {
+  selectedSourceChat.value = row
+  if (row) touchRecentChat(row)
+  const id = row?.id || row?.dialog_id || row?.dialogID || ''
+  if (id) {
+    const remembered = getChatMemory(String(id))
+    if (remembered) applyRecord(remembered, 'chat-id')
+  }
+  autoOutput.value = true
+  updateSmartOutput({ force: true })
+}
+
+
+function readAllMemory() {
+  try {
+    return JSON.parse(localStorage.getItem(HISTORY_KEY) || '{}')
+  } catch (err) {
+    return {}
+  }
+}
+
+function writeAllMemory(memory) {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(memory))
+  } catch (err) {
+    ElMessage.error('保存导出记录失败')
+  }
+}
+
+function loadMemory() {
+  const allMemory = readAllMemory()
+  const ns = nsKey.value
+  exportMemory.value = allMemory[ns] || { last: null, chats: {}, records: [] }
+}
+
+function makeRecord(extra = {}) {
+  const usedInput = String(input.value || '').trim()
+  return {
+    chat: String(chat.value || '').trim(),
+    type: type.value,
+    // input 表示下一次建议使用的 -i；如果本次填写了 -i，默认先等于本次值，导出完成后会根据输出文件更新成下一次范围。
+    input: usedInput,
+    usedInput,
+    all: all.value,
+    raw: raw.value,
+    output: output.value,
+    ns: nsKey.value,
+    time: new Date().toLocaleString(),
+    command: commandText(args.value),
+    ...extra
+  }
+}
+
+function saveMemory(record = makeRecord()) {
+  const allMemory = readAllMemory()
+  const ns = nsKey.value
+  const current = allMemory[ns] || { last: null, chats: {}, records: [] }
+  current.last = record
+
+  // type=id / last 时，如果 -i 为空，不覆盖该聊天已有的有效记录。
+  // 这能避免一次误操作把上次的 1213,1500 之类的输入值冲掉。
+  const canSaveChatIndex = record.chat && (record.input || record.type === 'all')
+  if (canSaveChatIndex) {
+    for (const key of chatKeyCandidates(record.chat)) {
+      current.chats[key] = record
+    }
+  }
+
+  const records = current.records || []
+  const duplicated = records.findIndex(item =>
+    item.chat === record.chat &&
+    item.type === record.type &&
+    item.input === record.input &&
+    item.output === record.output
+  )
+  if (duplicated >= 0) records.splice(duplicated, 1)
+  current.records = [record, ...records].slice(0, 30)
+
+  allMemory[ns] = current
+  writeAllMemory(allMemory)
+  exportMemory.value = current
+}
+
+function applyRecord(record, mode = 'all') {
+  if (!record) return
+  if (mode === 'all') {
+    chat.value = record.chat || ''
+    type.value = record.type || 'id'
+    input.value = record.input || ''
+    all.value = record.all ?? true
+    raw.value = record.raw ?? false
+    output.value = record.output || ''
+  }
+  if (mode === 'chat-id') {
+    // 只读取该聊天上次的 -i，避免覆盖你当前的 -c
+    type.value = record.type || 'id'
+    input.value = record.input || ''
+    all.value = record.all ?? true
+    raw.value = record.raw ?? false
+    if (!output.value) output.value = record.output || ''
+  }
+}
+
+function useLastExport() {
+  if (!exportMemory.value.last) {
+    ElMessage.info('还没有上次导出记录')
+    return
+  }
+  applyRecord(exportMemory.value.last, 'all')
+  autoOutput.value = true
+  updateSmartOutput({ force: true })
+  ElMessage.success('已读取上次的 -c 和 -i')
+}
+
+function useChatLastInput() {
+  if (!chatLastRecord.value) {
+    ElMessage.info('当前聊天还没有历史 -i 记录')
+    return
+  }
+  applyRecord(chatLastRecord.value, 'chat-id')
+  autoOutput.value = true
+  updateSmartOutput({ force: true })
+  ElMessage.success('已读取当前聊天对应的上次 -i')
+}
+
+
+function applyRecordAndSmart(record, mode = 'all') {
+  applyRecord(record, mode)
+  autoOutput.value = true
+  updateSmartOutput({ force: true })
+}
+
+function applyAnalyzeResultToRecord(record, analysis) {
+  if (!record) return null
+  if (!analysis?.ok) return record
+  const next = {
+    ...record,
+    exportedCount: analysis.count,
+    minId: analysis.minId,
+    maxId: analysis.maxId,
+    nextStartId: analysis.nextStartId,
+    nextInput: analysis.nextInput,
+    // 保存为下一次建议使用的 -i。下次读取该聊天时，就会自动填入 maxId+1 到最大值。
+    input: analysis.nextInput,
+    analyzedAt: new Date().toLocaleString()
+  }
+  next.command = commandText(['chat', 'export', ...(next.chat ? ['-c', next.chat] : []), '-T', next.type || 'id', ...(next.input ? ['-i', next.input] : []), ...(next.all ? ['--all'] : []), ...(next.raw ? ['--raw'] : []), ...(next.output ? ['-o', next.output] : [])])
+  return next
+}
+
+async function finalizeExportMemory(record) {
+  if (!record?.output) {
+    saveMemory(record)
+    return
+  }
+  const analysis = await window.tdlApi.analyzeExportFile(record.output)
+  if (analysis?.ok) {
+    const nextRecord = applyAnalyzeResultToRecord(record, analysis)
+    saveMemory(nextRecord)
+    input.value = nextRecord.input || ''
+    ElMessage.success(`已从导出文件识别最大消息 ID：${analysis.maxId}，下次建议 -i：${analysis.nextInput}`)
+  } else {
+    saveMemory(record)
+    ElMessage.warning(`导出完成，但未能自动识别下一次 -i：${analysis?.reason || '未知原因'}`)
+  }
+}
+
+async function pickOutput() {
+  const f = await window.tdlApi.saveFile({ defaultPath: output.value || await defaultOutputFile(), filters: [{ name: 'JSON', extensions: ['json'] }] })
+  if (f) { output.value = f; autoOutput.value = false }
+}
+
+// 如果从对话列表中点击“导出”，自动填充源聊天 ID，并尝试匹配该聊天历史记录
+onMounted(async () => {
+  loadMemory()
+
+  if (appState && appState.selectedExportRecord) {
+    applyRecord(appState.selectedExportRecord, 'all')
+    appState.selectedExportRecord = null
+  } else if (appState && appState.selectedChat) {
+    const row = appState.selectedChat
+    const id = row.id || row.dialog_id || row.dialogID || ''
+    chat.value = String(id)
+    selectedSourceChat.value = row
+    touchRecentChat(row)
+    const remembered = getChatMemory(String(id))
+    if (remembered) applyRecord(remembered, 'chat-id')
+  } else if (exportMemory.value.last) {
+    // 没有从列表传入聊天时，默认恢复上一次的 -c 和 -i，但输出文件重新生成，避免覆盖旧文件。
+    applyRecord(exportMemory.value.last, 'all')
+  }
+
+  autoOutput.value = true
+  await updateSmartOutput({ force: true })
+
+  window.tdlApi.onDone(async (data) => {
+    if (!pendingExportTaskId.value || data.taskId !== pendingExportTaskId.value) return
+    const record = pendingExportRecord.value
+    pendingExportTaskId.value = ''
+    pendingExportRecord.value = null
+    if (data.code === 0) {
+      await finalizeExportMemory(record)
+    } else if (record) {
+      // 失败时只保存草稿，避免丢失你刚填写的参数，但不更新 nextInput。
+      saveMemory(record)
+    }
+  })
+})
+
+// 切换命名空间后重新读取对应历史
+watch(nsKey, () => loadMemory())
+watch([chat, type, input], () => updateSmartOutput())
+
+const args = computed(() => {
+  const a = ['chat', 'export']
+  if (chat.value) a.push('-c', chat.value)
+  if (type.value) a.push('-T', type.value)
+  if (input.value) a.push('-i', input.value)
+  if (all.value) a.push('--all')
+  if (raw.value) a.push('--raw')
+  if (output.value) a.push('-o', output.value)
+  return a
+})
+
+async function run() {
+  if (requiresInput() && !String(input.value || '').trim()) {
+    const remembered = getChatMemory(chat.value)
+    if (remembered?.input) {
+      applyRecord(remembered, 'chat-id')
+      ElMessage.success('已自动读取当前聊天上次的 -i')
+    } else {
+      ElMessage.error('当前导出类型需要填写 -i。请填写输入值，或先点击“读取该聊天”。')
+      return
+    }
+  }
+
+  if (canAutoAnalyzeNextInput()) {
+    ElMessage.info('本次未填写 -i，将按 tdl 默认范围导出；完成后会从输出 JSON 自动识别最大消息 ID，并生成下次的 -i。')
+  }
+
+  const row = sourceChatRow()
+  if (row) touchRecentChat(row)
+
+  const record = makeRecord({
+    usedInput: String(input.value || '').trim(),
+    autoAnalyzeNextInput: canAutoAnalyzeNextInput()
+  })
+  // 先保存草稿，任务成功后再用导出文件分析结果更新为 nextInput。
+  saveMemory(record)
+  const started = await runTask('export', args.value, '导出消息')
+  pendingExportTaskId.value = started?.taskId || ''
+  pendingExportRecord.value = record
+}
+</script>
+<template>
+  <h1 class="page-title">导出消息</h1>
+  <p class="page-desc">支持按消息 ID、最近 N 条等方式导出。会自动记住上一次的 -c 和 -i，并按命名空间与聊天 ID 分开保存。</p>
+  <div class="card">
+    <el-form label-width="120px">
+      <el-form-item label="源聊天 -c">
+        <div style="display:flex; gap:10px; align-items:center; width:100%">
+          <ChatSelect
+            v-model="chat"
+            placeholder="从对话列表选择，或手动输入 @source / ID"
+            button-text="更新缓存"
+            @select="handleSourceSelect"
+          />
+          <el-button @click="useLastExport">读取上次</el-button>
+        </div>
+      </el-form-item>
+      <div class="grid-2">
+        <el-form-item label="导出类型">
+          <el-select v-model="type"><el-option label="按消息 ID" value="id"/><el-option label="最近 N 条" value="last"/><el-option label="全部" value="all"/></el-select>
+        </el-form-item>
+        <el-form-item label="输入值 -i">
+          <div style="display:flex; gap:10px; align-items:center; width:100%">
+            <el-input v-model="input" placeholder="例如 1213,1500 或 100" style="flex:1" />
+            <el-button @click="useChatLastInput">读取该聊天</el-button>
+          </div>
+        </el-form-item>
+      </div>
+      <el-alert
+        v-if="requiresInput() && !input"
+        type="warning"
+        show-icon
+        :closable="false"
+        style="margin-bottom:16px"
+        title="最近 N 条需要 -i；按消息 ID 留空时会全量导出，完成后自动读取输出 JSON 的最大消息 ID，生成下次续导范围。"
+      />
+      <el-alert
+        v-if="canAutoAnalyzeNextInput()"
+        type="info"
+        show-icon
+        :closable="false"
+        style="margin-bottom:16px"
+        title="未填写 -i：本次会按 tdl 默认范围导出；完成后软件会读取 output JSON，记录最大消息 ID，并自动生成下次 -i。"
+      />
+      <el-alert
+        v-if="chatLastRecord"
+        type="info"
+        show-icon
+        :closable="false"
+        style="margin-bottom:16px"
+        :title="`当前聊天上次导出：-i ${chatLastRecord.input || '未填写'}，时间：${chatLastRecord.time || '-'}`"
+      />
+      <el-form-item label="选项"><el-checkbox v-model="all">包含普通文字 --all</el-checkbox><el-checkbox v-model="raw">Raw 原始结构 --raw</el-checkbox></el-form-item>
+      <el-form-item label="输出文件">
+        <div style="display:flex; gap:10px; align-items:center; width:100%">
+          <el-input v-model="output" placeholder="messages.json 绝对路径" style="flex:1" />
+          <el-button @click="pickOutput">选择</el-button>
+        </div>
+      </el-form-item>
+    </el-form>
+    <CommandPreview :command="commandText(args)" />
+    <div style="height:16px"></div>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <el-button type="primary" @click="run">开始导出</el-button>
+      <el-button @click="saveMemory">仅保存当前 -c / -i</el-button>
+    </div>
+  </div>
+
+  <div class="card" v-if="recentRecords.length">
+    <div class="card-title">最近导出记录</div>
+    <el-table :data="recentRecords" style="width:100%" size="small">
+      <el-table-column prop="time" label="时间" width="170" />
+      <el-table-column prop="chat" label="-c 源聊天" width="180" />
+      <el-table-column prop="usedInput" label="本次 -i" width="130" />
+      <el-table-column prop="maxId" label="最大ID" width="110" />
+      <el-table-column prop="input" label="下次建议 -i" width="190" />
+      <el-table-column prop="output" label="输出文件" />
+      <el-table-column label="操作" width="110">
+        <template #default="scope">
+          <el-button size="small" type="primary" plain @click="applyRecordAndSmart(scope.row, 'all')">套用</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
+  </div>
+</template>

@@ -1,0 +1,222 @@
+<script setup>
+import { ref, computed, onMounted } from 'vue'
+import { commandText, runTask } from '../utils'
+import CommandPreview from '../components/CommandPreview.vue'
+import ChatSelect from '../components/ChatSelect.vue'
+import { appState } from '../main.js'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { chatId, chatTitle, findChatByValue } from '../chatCache'
+import { saveForwardRecord, touchRecentChat } from '../historyStore'
+const sourceType = ref('file')
+const from = ref('')
+const peer = ref('')
+const thread = ref('')
+const mode = ref('clone')
+const dryRun = ref(true)
+const silent = ref(false)
+const single = ref(false)
+const desc = ref(false)
+const edit = ref('')
+const selectedTargetChat = ref(null)
+
+function getTopics(row) {
+  return Array.isArray(row?.topics) ? row.topics : []
+}
+
+const targetTopics = computed(() => getTopics(selectedTargetChat.value))
+
+function handleTargetSelect(row) {
+  selectedTargetChat.value = row
+  if (row) touchRecentChat(row)
+  if (!row) return
+  // 选择新聊天时，如果新聊天没有当前话题，则清空话题，避免误发到旧话题。
+  if (targetTopics.value.length && thread.value && !targetTopics.value.some(t => String(t.id) === String(thread.value))) {
+    thread.value = ''
+  }
+}
+
+function joinPath(dir, fileName) {
+  if (!dir) return fileName
+  const clean = String(dir).replace(/[\\/]+$/, '')
+  const sep = clean.includes('\\') ? '\\' : '/'
+  return `${clean}${sep}${fileName}`
+}
+
+async function defaultJsonFile() {
+  const dir = appState.config?.defaultDownloadDir || await window.tdlApi.getDefaultOutputDir()
+  return joinPath(dir, 'messages.json')
+}
+
+async function pickFile() {
+  const f = await window.tdlApi.openFile({ defaultPath: from.value || await defaultJsonFile(), filters: [{ name: 'JSON', extensions: ['json'] }, { name: 'All', extensions: ['*'] }] })
+  if (f) from.value = f
+}
+
+// 如果从对话列表中点击“转发”，自动填充目标
+onMounted(async () => {
+  if (appState && appState.selectedForwardRecord) {
+    const record = appState.selectedForwardRecord
+    sourceType.value = record.sourceType || 'file'
+    from.value = record.from || ''
+    peer.value = record.peer || record.to || ''
+    thread.value = record.thread || ''
+    mode.value = record.mode || 'clone'
+    dryRun.value = record.dryRun ?? true
+    silent.value = record.silent ?? false
+    single.value = record.single ?? false
+    desc.value = record.desc ?? false
+    edit.value = record.edit || ''
+    selectedTargetChat.value = findChatByValue(peer.value, appState.cachedChats || [])
+    appState.selectedForwardRecord = null
+  } else if (appState && appState.selectedChat) {
+    const row = appState.selectedChat
+    selectedTargetChat.value = row
+    touchRecentChat(row)
+    const id = row.id || row.dialog_id || row.dialogID || ''
+    peer.value = String(id || row.username || '')
+  }
+  if (!from.value && sourceType.value === 'file') from.value = await defaultJsonFile()
+})
+const toValue = computed(() => thread.value ? `{ Peer: "${peer.value}", Thread: ${thread.value} }` : peer.value)
+const args = computed(() => {
+  const a = ['forward']
+  if (from.value) a.push('--from', from.value)
+  if (peer.value) a.push('--to', toValue.value)
+  if (mode.value) a.push('--mode', mode.value)
+  if (dryRun.value) a.push('--dry-run')
+  if (silent.value) a.push('--silent')
+  if (single.value) a.push('--single')
+  if (desc.value) a.push('--desc')
+  if (edit.value) a.push('--edit', edit.value)
+  return a
+})
+function targetLabel() {
+  const row = selectedTargetChat.value || findChatByValue(peer.value, appState.cachedChats || [])
+  const title = chatTitle(row)
+  const id = chatId(row) || peer.value
+  return title ? `${title}（${id}）` : String(peer.value || '')
+}
+
+function threadLabel() {
+  if (!thread.value) return '未指定'
+  const topic = targetTopics.value.find(item => String(item.id) === String(thread.value))
+  return topic ? `${topic.title || topic.id}（${topic.id}）` : String(thread.value)
+}
+
+async function analyzeSourceCount() {
+  if (sourceType.value !== 'file' || !from.value) return ''
+  try {
+    const result = await window.tdlApi.analyzeExportFile(from.value)
+    if (result?.ok) return `${result.count} 条（ID ${result.minId} - ${result.maxId}）`
+  } catch {}
+  return '无法识别，按 tdl 实际处理为准'
+}
+
+function makeRecord(extra = {}) {
+  return {
+    sourceType: sourceType.value,
+    from: from.value,
+    peer: peer.value,
+    targetLabel: targetLabel(),
+    thread: thread.value,
+    threadLabel: threadLabel(),
+    mode: mode.value,
+    dryRun: dryRun.value,
+    silent: silent.value,
+    single: single.value,
+    desc: desc.value,
+    edit: edit.value,
+    command: commandText(args.value),
+    time: new Date().toLocaleString(),
+    ...extra
+  }
+}
+
+async function run() {
+  if (!from.value || !peer.value) {
+    ElMessage.error('请先填写来源和目标 Peer')
+    return
+  }
+  const countText = await analyzeSourceCount()
+  const html = [
+    `<p><strong>来源：</strong>${from.value}</p>`,
+    `<p><strong>目标聊天：</strong>${targetLabel()}</p>`,
+    `<p><strong>目标话题：</strong>${threadLabel()}</p>`,
+    `<p><strong>模式：</strong>${mode.value}</p>`,
+    `<p><strong>Dry Run：</strong>${dryRun.value ? '是，仅演练' : '否，会实际发送'}</p>`,
+    countText ? `<p><strong>来源消息：</strong>${countText}</p>` : '',
+    `<p style="color:#d99000">请确认目标聊天和话题无误后再继续。</p>`
+  ].join('')
+  try {
+    await ElMessageBox.confirm(html, '确认转发预览', {
+      confirmButtonText: dryRun.value ? '开始演练' : '确认转发',
+      cancelButtonText: '取消',
+      type: dryRun.value ? 'warning' : 'error',
+      dangerouslyUseHTMLString: true
+    })
+  } catch {
+    return
+  }
+  const record = saveForwardRecord(makeRecord({ estimatedMessages: countText }))
+  const row = selectedTargetChat.value || findChatByValue(peer.value, appState.cachedChats || [])
+  if (row) touchRecentChat(row)
+  await runTask('forward', args.value, '转发消息')
+  ElMessage.success('已记录本次转发参数')
+}
+
+</script>
+<template>
+  <h1 class="page-title">转发消息</h1>
+  <p class="page-desc">把 JSON / 链接转发到指定聊天或话题。默认开启 dry-run，避免误发。</p>
+  <div class="card">
+    <el-form label-width="120px">
+      <el-form-item label="来源类型"><el-radio-group v-model="sourceType"><el-radio-button label="file">JSON 文件</el-radio-button><el-radio-button label="url">消息链接</el-radio-button></el-radio-group></el-form-item>
+      <!-- Wrap the input and optional button in a flex container for better spacing -->
+      <el-form-item label="来源">
+        <div style="display:flex; gap:10px; align-items:center; width:100%">
+          <el-input v-model="from" placeholder="messages.json 绝对路径，或 https://t.me/xxx/123" style="flex:1" />
+          <!-- Only show the button for file source type -->
+          <el-button v-if="sourceType==='file'" @click="pickFile">选择</el-button>
+        </div>
+      </el-form-item>
+      <div class="grid-2">
+        <el-form-item label="目标 Peer">
+          <ChatSelect
+            v-model="peer"
+            placeholder="从对话列表选择目标，或手动输入 @channel / ID"
+            button-text="更新缓存"
+            @select="handleTargetSelect"
+          />
+        </el-form-item>
+        <el-form-item label="Thread 话题">
+          <el-select
+            v-if="targetTopics.length"
+            v-model="thread"
+            filterable
+            allow-create
+            default-first-option
+            clearable
+            placeholder="从该聊天的话题中选择，或手动输入"
+            style="width:100%"
+          >
+            <el-option
+              v-for="topic in targetTopics"
+              :key="String(topic.id)"
+              :label="`${topic.title || topic.id} / ${topic.id}`"
+              :value="String(topic.id)"
+            />
+          </el-select>
+          <el-input v-else v-model="thread" placeholder="可选，例如 65054" />
+        </el-form-item>
+      </div>
+      <el-form-item label="模式"><el-radio-group v-model="mode"><el-radio-button label="direct">direct 保留来源</el-radio-button><el-radio-button label="clone">clone 复制发送</el-radio-button></el-radio-group></el-form-item>
+      <el-form-item label="选项"><el-checkbox v-model="dryRun">dry-run 演练</el-checkbox><el-checkbox v-model="silent">静默</el-checkbox><el-checkbox v-model="single">单条</el-checkbox><el-checkbox v-model="desc">倒序</el-checkbox></el-form-item>
+      <el-form-item label="编辑表达式"><el-input v-model="edit" placeholder='例如 Message.Message + "\n整理自频道"' /></el-form-item>
+    </el-form>
+    <CommandPreview :command="commandText(args)" />
+    <div style="height:16px"></div>
+    <el-alert v-if="dryRun" type="warning" show-icon :closable="false" title="当前是 dry-run，只演练不真正发送。正式转发前取消勾选。" />
+    <div style="height:16px"></div>
+    <el-button type="primary" @click="run">开始转发</el-button>
+  </div>
+</template>

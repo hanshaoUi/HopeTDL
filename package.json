@@ -1,0 +1,65 @@
+{
+  "name": "tdl-gui-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A GUI prototype for common tdl workflows: chats, export, forward, upload and logs.",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
+    "build": "vite build",
+    "start": "electron .",
+    "build:dist": "npm run build && electron-builder",
+    "build:mac": "npm run build && electron-builder --mac",
+    "build:win": "npm run build && electron-builder --win",
+    "build:linux": "npm run build && electron-builder --linux"
+  },
+  "dependencies": {
+    "@vitejs/plugin-vue": "latest",
+    "vite": "latest",
+    "vue": "latest",
+    "element-plus": "latest",
+    "@element-plus/icons-vue": "latest",
+    "electron-store": "latest"
+  },
+  "devDependencies": {
+    "electron": "latest",
+    "concurrently": "latest",
+    "wait-on": "latest",
+    "electron-builder": "latest"
+  },
+  "build": {
+    "appId": "com.hope.tdlgui",
+    "productName": "HopeTDL",
+    "directories": {
+      "output": "release",
+      "buildResources": "assets/icons"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "assets/icons/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "icon": "assets/icons/icon.icns",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "icon": "assets/icons/icon.ico",
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    },
+    "linux": {
+      "icon": "assets/icons",
+      "target": [
+        "AppImage",
+        "tar.gz"
+      ]
+    }
+  }
+}

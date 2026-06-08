@@ -1,0 +1,286 @@
+:root {
+  --bg: #0f1117;
+  --panel: #171a23;
+  --panel2: #202432;
+  --line: #2e3445;
+  --text: #eef1f8;
+  --muted: #9aa3b8;
+  --blue: #6aa7ff;
+  --green: #74d99f;
+  --red: #ff7d7d;
+}
+
+/* Light theme variables. When the html root has data-theme="light", these values will override the dark defaults. */
+:root[data-theme='light'] {
+  --bg: #f5f7fa;
+  --panel: #ffffff;
+  --panel2: #f7f8fb;
+  --line: #dcdfe6;
+  --text: #2e3445;
+  --muted: #6c7a96;
+  /* Accent colors similar to Element Plus light theme */
+  --blue: #409eff;
+  --green: #67c23a;
+  --red: #f56c6c;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+.app-shell { display: flex; height: 100vh; overflow: hidden; }
+.sidebar { width: 238px; background: #0b0d12; border-right: 1px solid var(--line); padding: 18px 14px; }
+.brand { font-size: 21px; font-weight: 800; margin-bottom: 5px; }
+.brand-sub { color: var(--muted); font-size: 12px; margin-bottom: 24px; }
+.nav-item { height: 42px; display: flex; align-items: center; padding: 0 12px; border-radius: 10px; cursor: pointer; color: #c6cce0; margin-bottom: 5px; }
+.nav-item:hover { background: #151925; }
+.nav-item.active { background: #20314d; color: white; }
+.main {
+  /* Stack the main content and log panel vertically instead of side‑by‑side. */
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* The content area should fill the available vertical space when the log panel is moved below */
+.content {
+  flex: 1;
+  overflow: auto;
+  padding: 22px;
+  /* Ensure the content can shrink to allow space for the log panel */
+  min-height: 0;
+}
+
+/* Move the task log panel to the bottom of the page.  Remove fixed width, set height,
+   and use a top border instead of a left border. */
+.log-panel {
+  width: 100%;
+  height: 220px;
+  background: #0b0d12;
+  border-top: 1px solid var(--line);
+  border-left: none;
+  display: flex;
+  flex-direction: column;
+}
+.log-title { padding: 14px 16px; font-weight: 700; border-bottom: 1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
+.log-body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: #d8deef;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.log-line-wrap {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 2px 64px 2px 0;
+  border-radius: 6px;
+}
+.log-line-wrap:hover {
+  background: rgba(255,255,255,.05);
+}
+.log-line {
+  flex: 1;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.log-line.stderr, .log-line.error { color: var(--red); }
+.log-line.info { color: var(--green); }
+.log-copy-btn {
+  position: absolute;
+  right: 4px;
+  top: 2px;
+  opacity: 0;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.log-line-wrap:hover .log-copy-btn {
+  opacity: 1;
+}
+.log-copy-btn:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+.page-title { margin: 0 0 4px; font-size: 25px; font-weight: 800; }
+.page-desc { margin: 0 0 20px; color: var(--muted); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 18px; margin-bottom: 16px; }
+.card-title { font-size: 16px; font-weight: 750; margin-bottom: 14px; }
+.grid-2 { display:grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.grid-3 { display:grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.command-preview { background: #090b10; border: 1px solid #2a3144; color: #d7e4ff; border-radius: 12px; padding: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow:auto; }
+
+/* Light theme for command preview */
+:root[data-theme='light'] .command-preview {
+  background: #f7f8fa;
+  border: 1px solid #dcdfe6;
+  color: var(--text);
+}
+/* Style overrides for Element Plus form components. Different styles are applied depending on the current theme */
+
+/* Dark theme overrides */
+:root[data-theme='dark'] .el-form-item__label {
+  color: #cfd5e6 !important;
+}
+:root[data-theme='dark'] .el-input__wrapper,
+:root[data-theme='dark'] .el-textarea__inner,
+:root[data-theme='dark'] .el-select__wrapper {
+  background-color: #10131b !important;
+  box-shadow: 0 0 0 1px #343b50 inset !important;
+}
+:root[data-theme='dark'] .el-input__inner,
+:root[data-theme='dark'] .el-textarea__inner {
+  color: #eef1f8 !important;
+}
+:root[data-theme='dark'] .el-radio,
+:root[data-theme='dark'] .el-checkbox {
+  color: #d6dbea !important;
+}
+
+/* Light theme overrides */
+:root[data-theme='light'] .el-form-item__label {
+  color: var(--text) !important;
+}
+:root[data-theme='light'] .el-input__wrapper,
+:root[data-theme='light'] .el-textarea__inner,
+:root[data-theme='light'] .el-select__wrapper {
+  background-color: #ffffff !important;
+  box-shadow: 0 0 0 1px #dcdfe6 inset !important;
+}
+:root[data-theme='light'] .el-input__inner,
+:root[data-theme='light'] .el-textarea__inner {
+  color: var(--text) !important;
+}
+:root[data-theme='light'] .el-radio,
+:root[data-theme='light'] .el-checkbox {
+  color: var(--text) !important;
+}
+.stat { background: var(--panel2); border-radius: 14px; padding: 16px; border: 1px solid var(--line); }
+.stat .label { color: var(--muted); font-size: 12px; }
+.stat .value { margin-top: 7px; font-size: 22px; font-weight: 800; }
+
+/*
+  Theme-specific overrides for container elements like sidebar and log panel.
+  In dark mode (default), these backgrounds are dark as defined above.
+  In light mode, they inherit light backgrounds from the theme variables.
+*/
+:root[data-theme='light'] .sidebar {
+  background: var(--panel2);
+  border-right: 1px solid var(--line);
+}
+
+:root[data-theme='light'] .log-panel {
+  background: var(--panel2);
+  border-top: 1px solid var(--line);
+  border-left: none;
+}
+
+:root[data-theme='light'] .log-title {
+  color: var(--text);
+  border-bottom: 1px solid var(--line);
+}
+
+:root[data-theme='light'] .log-body {
+  color: var(--text);
+}
+
+/* Chat selector shared by export / forward / upload pages */
+.chat-select-wrap {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+}
+.chat-select-wrap .el-button {
+  flex: 0 0 auto;
+}
+.chat-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.25;
+  padding: 4px 0;
+}
+.chat-option-main {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+.chat-option-title {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-option-username {
+  color: var(--muted);
+  font-size: 12px;
+}
+.chat-option-meta {
+  display: flex;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.topic-select-wrap {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+}
+.chat-option-badge {
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(106, 167, 255, .16);
+  color: var(--blue);
+  border: 1px solid rgba(106, 167, 255, .35);
+}
+.chat-option-badge.favorite {
+  background: rgba(255, 196, 87, .18);
+  color: #d99000;
+  border-color: rgba(255, 196, 87, .45);
+}
+.status-stack { display:flex; flex-direction:column; gap:4px; line-height:1.25; }
+.status-main { font-weight:700; font-size:13px; }
+.status-sub { color:var(--muted); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.section-card { background: var(--panel); border:1px solid var(--line); border-radius:16px; padding:18px; margin-bottom:16px; }
+.section-title { font-size:16px; font-weight:800; margin-bottom:14px; }
+.action-row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.favorite-button { font-size:18px; cursor:pointer; color:#d99000; user-select:none; }
+.favorite-button.off { color:var(--muted); }
+.history-toolbar { display:flex; gap:10px; align-items:center; justify-content:space-between; margin-bottom:14px; flex-wrap:wrap; }
+.mini-muted { color:var(--muted); font-size:12px; }
+
+/* Make task logs selectable/copyable in packaged Electron. */
+.log-panel,
+.log-body,
+.log-line {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+
+:root[data-theme='light'] .log-line-wrap:hover {
+  background: rgba(0,0,0,.04);
+}
+:root[data-theme='light'] .log-copy-btn {
+  background: #ffffff;
+  color: var(--text);
+  border-color: var(--line);
+}
