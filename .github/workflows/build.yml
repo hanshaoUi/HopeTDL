@@ -22,7 +22,7 @@ jobs:
         include:
           - name: macOS arm64
             os: macos-latest
-            build_cmd: pnpm run build && CSC_IDENTITY_AUTO_DISCOVERY=false pnpm exec electron-builder --mac
+            build_cmd: pnpm run build && CSC_IDENTITY_AUTO_DISCOVERY=false pnpm exec electron-builder --mac --publish never
             artifact_name: HopeTDL-macOS
             artifact_path: |
               release/*.dmg
@@ -30,7 +30,7 @@ jobs:
 
           - name: Windows x64
             os: windows-latest
-            build_cmd: pnpm run build && pnpm exec electron-builder --win
+            build_cmd: pnpm run build && pnpm exec electron-builder --win --publish never
             artifact_name: HopeTDL-Windows
             artifact_path: |
               release/*.exe
