@@ -63,6 +63,44 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile --prod=false
 
+      - name: Fix Windows icon
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pngPath = Join-Path $PWD 'assets/icons/icon-256.png'
+          $icoPath = Join-Path $PWD 'assets/icons/icon.ico'
+          if (!(Test-Path $pngPath)) {
+            $pngPath = Join-Path $PWD 'assets/icons/icon.png'
+          }
+          if (!(Test-Path $pngPath)) {
+            throw "Cannot find icon PNG at assets/icons/icon-256.png or assets/icons/icon.png"
+          }
+          Add-Type -AssemblyName System.Drawing
+          $pngBytes = [System.IO.File]::ReadAllBytes($pngPath)
+          $image = [System.Drawing.Image]::FromFile($pngPath)
+          if ($image.Width -lt 256 -or $image.Height -lt 256) {
+            throw "Windows icon source must be at least 256x256 pixels, got $($image.Width)x$($image.Height)"
+          }
+          $image.Dispose()
+          $fs = [System.IO.File]::Create($icoPath)
+          $bw = New-Object System.IO.BinaryWriter($fs)
+          $bw.Write([UInt16]0)
+          $bw.Write([UInt16]1)
+          $bw.Write([UInt16]1)
+          $bw.Write([Byte]0)
+          $bw.Write([Byte]0)
+          $bw.Write([Byte]0)
+          $bw.Write([Byte]0)
+          $bw.Write([UInt16]1)
+          $bw.Write([UInt16]32)
+          $bw.Write([UInt32]$pngBytes.Length)
+          $bw.Write([UInt32]22)
+          $bw.Write($pngBytes)
+          $bw.Close()
+          $fs.Close()
+          Write-Host "Generated Windows icon: $icoPath from $pngPath"
+
       - name: Build app
         shell: bash
         run: ${{ matrix.build_cmd }}
