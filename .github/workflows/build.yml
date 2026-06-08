@@ -49,12 +49,15 @@ jobs:
       - name: Install dependencies
         run: npm install --include=dev
 
+      - name: Ensure local build tools
+        run: npm install --no-save vite@latest @vitejs/plugin-vue@latest electron-builder@latest electron@latest
+
       - name: Verify local build tools
         shell: bash
         run: |
-          npm ls vite @vitejs/plugin-vue electron-builder
-          npx --no-install vite --version
-          npx --no-install electron-builder --version
+          npm ls vite @vitejs/plugin-vue electron-builder electron
+          ./node_modules/.bin/vite --version
+          ./node_modules/.bin/electron-builder --version
 
       - name: Build app
         shell: bash
