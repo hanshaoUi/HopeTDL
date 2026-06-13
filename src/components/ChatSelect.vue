@@ -1,7 +1,7 @@
 <script setup>
-import { computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
-import { appState } from '../main.js'
+import { computed, h, onMounted } from 'vue'
+import { message } from '../ui/naive'
+import { appState } from '../state.js'
 import { loadChatCache, chatId, chatTitle, chatUsername, chatType, chatTopics, chatOptionLabel, findChatByValue } from '../chatCache'
 import { isFavoriteChat, getRecentChats, sortChatsForUse, touchRecentChat, normalizeChatKey } from '../historyStore'
 
@@ -20,6 +20,11 @@ const value = computed({
 })
 
 const chats = computed(() => sortChatsForUse(appState.cachedChats || []))
+const chatOptions = computed(() => chats.value.map(row => ({
+  label: chatOptionLabel(row),
+  value: String(chatId(row)),
+  row
+})))
 const recentKeys = computed(() => new Set(getRecentChats().map(item => item.key)))
 const loading = computed(() => appState.chatCacheLoading)
 
@@ -28,7 +33,7 @@ async function loadChats(force = false) {
     // 非强制时只读取/确保缓存；缓存未过期不会再次运行 tdl。
     await loadChatCache({ ensure: !force, refresh: force })
   } catch (err) {
-    ElMessage.error('读取对话缓存失败：' + (err?.message || err))
+    message.error('读取对话缓存失败：' + (err?.message || err))
   }
 }
 
@@ -42,6 +47,27 @@ function isRecent(row) {
   return recentKeys.value.has(normalizeChatKey(chatId(row) || chatUsername(row)))
 }
 
+function renderChatLabel(option) {
+  const row = option.row
+  if (!row) return option.label
+  return h('div', { class: 'chat-option' }, [
+    h('div', { class: 'chat-option-main' }, [
+      h('span', { class: 'chat-option-title' }, chatTitle(row) || '未命名对话'),
+      isFavoriteChat(chatId(row) || chatUsername(row))
+        ? h('span', { class: 'chat-option-badge favorite' }, '收藏')
+        : isRecent(row)
+          ? h('span', { class: 'chat-option-badge' }, '最近')
+          : null,
+      chatUsername(row) ? h('span', { class: 'chat-option-username' }, `@${chatUsername(row)}`) : null
+    ]),
+    h('div', { class: 'chat-option-meta' }, [
+      h('span', chatType(row) || 'unknown'),
+      h('span', `ID: ${chatId(row)}`),
+      chatTopics(row).length ? h('span', `话题 ${chatTopics(row).length}`) : null
+    ])
+  ])
+}
+
 onMounted(() => {
   // 组件挂载只读取缓存。首次启动时 App 已经负责 ensure；如果还没完成，这里也不会重复刷新未过期缓存。
   if (!chats.value.length) loadChats(false)
@@ -50,41 +76,21 @@ onMounted(() => {
 
 <template>
   <div class="chat-select-wrap">
-    <el-select
-      v-model="value"
+    <n-select
+      v-model:value="value"
       filterable
-      allow-create
+      tag
       default-first-option
       clearable
-      :reserve-keyword="false"
       :loading="loading"
+      :options="chatOptions"
+      :render-label="renderChatLabel"
       :placeholder="placeholder"
       style="width:100%"
-      @visible-change="visible => visible && loadChats(false)"
+      @update:show="visible => visible && loadChats(false)"
       @focus="loadChats(false)"
-      @change="handleChange"
-    >
-      <el-option
-        v-for="row in chats"
-        :key="String(chatId(row))"
-        :label="chatOptionLabel(row)"
-        :value="String(chatId(row))"
-      >
-        <div class="chat-option">
-          <div class="chat-option-main">
-            <span class="chat-option-title">{{ chatTitle(row) || '未命名对话' }}</span>
-            <span v-if="isFavoriteChat(chatId(row) || chatUsername(row))" class="chat-option-badge favorite">收藏</span>
-            <span v-else-if="isRecent(row)" class="chat-option-badge">最近</span>
-            <span v-if="chatUsername(row)" class="chat-option-username">@{{ chatUsername(row) }}</span>
-          </div>
-          <div class="chat-option-meta">
-            <span>{{ chatType(row) || 'unknown' }}</span>
-            <span>ID: {{ chatId(row) }}</span>
-            <span v-if="chatTopics(row).length">话题 {{ chatTopics(row).length }}</span>
-          </div>
-        </div>
-      </el-option>
-    </el-select>
-    <el-button v-if="showRefresh" :loading="loading" @click="loadChats(true)">{{ buttonText }}</el-button>
+      @update:value="handleChange"
+    />
+    <n-button v-if="showRefresh" :loading="loading" @click="loadChats(true)">{{ buttonText }}</n-button>
   </div>
 </template>

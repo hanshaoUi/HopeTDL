@@ -1,9 +1,24 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { spawn } = require('child_process')
+const { CommentForwardWorker } = require('./commentForwardWorker.cjs')
 
 const isDev = !app.isPackaged
+const devServerUrl = 'http://127.0.0.1:5174'
+let currentCommentForwardWorker = null
+let mainWindow = null
+let tray = null
+let isQuitting = false
+let appStatus = {
+  runningTasks: 0,
+  failedTasks: 0,
+  enabledSchedules: 0,
+  totalSchedules: 0,
+  schedulerPaused: false,
+  lastScheduleCheck: ''
+}
+const activeTdlChildren = new Map()
 const userDataDir = () => app.getPath('userData')
 const configPath = () => path.join(userDataDir(), 'config.json')
 const chatCachePath = () => path.join(userDataDir(), 'chats-cache.json')
@@ -21,13 +36,21 @@ function defaultOutputDir() {
 }
 
 function appIconPath() {
-  // Use the same icon in dev mode and packaged mode.
-  // The assets directory is included by electron-builder.
   return isDev
     ? path.join(projectRoot(), 'assets', 'icons', 'icon.png')
     : path.join(__dirname, '..', 'assets', 'icons', 'icon.png')
 }
 
+function trayIconPath() {
+  return isDev
+    ? path.join(projectRoot(), 'assets', 'icons', 'icon-24.png')
+    : path.join(__dirname, '..', 'assets', 'icons', 'icon-24.png')
+}
+
+function trayIcon() {
+  const image = nativeImage.createFromPath(trayIconPath())
+  return image.resize({ width: 18, height: 18 })
+}
 
 function commandExists(filePath) {
   try {
@@ -109,25 +132,162 @@ function saveConfig(config) {
 }
 
 function createWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    showMainWindow()
+    return mainWindow
+  }
+
   const win = new BrowserWindow({
     width: 1320,
     height: 860,
-    minWidth: 1100,
-    minHeight: 720,
+    minWidth: 768,
+    minHeight: 640,
     title: 'HopeTDL',
     icon: appIconPath(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: false
     }
+  })
+  mainWindow = win
+
+  win.on('close', (event) => {
+    if (isQuitting) return
+    event.preventDefault()
+    hideMainWindow()
+  })
+
+  win.on('minimize', (event) => {
+    if (isQuitting) return
+    event.preventDefault()
+    hideMainWindow()
+  })
+
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null
   })
 
   if (isDev) {
-    win.loadURL('http://127.0.0.1:5173')
+    win.loadURL(devServerUrl)
   } else {
     win.loadFile(path.join(__dirname, '../dist/index.html'))
   }
+
+  return win
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (process.platform === 'darwin' && app.dock) app.dock.show()
+  mainWindow.show()
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.focus()
+}
+
+function hideMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.hide()
+  if (process.platform === 'darwin' && app.dock) app.dock.hide()
+}
+
+function sendToRenderer(channel, payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.webContents.send(channel, payload)
+}
+
+function shutdownRunningTasks() {
+  if (currentCommentForwardWorker) {
+    currentCommentForwardWorker.abort()
+    currentCommentForwardWorker = null
+  }
+  for (const child of activeTdlChildren.values()) {
+    try { child.kill('SIGTERM') } catch {}
+  }
+  activeTdlChildren.clear()
+}
+
+function updateDockBadge() {
+  if (process.platform !== 'darwin' || !app.dock) return
+  if (appStatus.runningTasks > 0) {
+    app.dock.setBadge(String(appStatus.runningTasks))
+    return
+  }
+  if (appStatus.failedTasks > 0) {
+    app.dock.setBadge('!')
+    return
+  }
+  app.dock.setBadge('')
+}
+
+function navigateRenderer(view) {
+  showMainWindow()
+  sendToRenderer('app:navigate', view)
+}
+
+function updateTrayMenu() {
+  if (!tray) return
+  const scheduleText = appStatus.schedulerPaused
+    ? `定时任务：已暂停（${appStatus.enabledSchedules}/${appStatus.totalSchedules}）`
+    : `定时任务：已启用 ${appStatus.enabledSchedules}/${appStatus.totalSchedules}`
+  tray.setToolTip(`HopeTDL · 运行中 ${appStatus.runningTasks} · 定时 ${appStatus.enabledSchedules}/${appStatus.totalSchedules}`)
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'HopeTDL', enabled: false },
+    { label: `运行中任务：${appStatus.runningTasks}`, enabled: false },
+    { label: `失败任务：${appStatus.failedTasks}`, enabled: false },
+    { label: scheduleText, enabled: false },
+    { label: `最近一次检测：${appStatus.lastScheduleCheck || '-'}`, enabled: false },
+    { type: 'separator' },
+    { label: '打开 HopeTDL', click: showMainWindow },
+    { label: '任务中心', click: () => navigateRenderer('taskCenter') },
+    { label: '设置', click: () => navigateRenderer('settings') },
+    { type: 'separator' },
+    {
+      label: appStatus.schedulerPaused ? '恢复定时任务' : '暂停所有定时任务',
+      click: () => {
+        appStatus.schedulerPaused = !appStatus.schedulerPaused
+        sendToRenderer('app:scheduler-paused', appStatus.schedulerPaused)
+        updateDockBadge()
+        updateTrayMenu()
+      }
+    },
+    {
+      label: '停止全部运行中任务',
+      enabled: appStatus.runningTasks > 0 || activeTdlChildren.size > 0 || !!currentCommentForwardWorker,
+      click: () => {
+        shutdownRunningTasks()
+        sendToRenderer('app:tasks-stopped')
+      }
+    },
+    {
+      label: '打开输出目录',
+      click: async () => {
+        const config = readConfig()
+        await shell.openPath(config.defaultDownloadDir || defaultOutputDir())
+      }
+    },
+    { type: 'separator' },
+    {
+      label: '退出 HopeTDL',
+      click: () => {
+        isQuitting = true
+        shutdownRunningTasks()
+        app.quit()
+      }
+    }
+  ]))
+}
+
+function createTray() {
+  if (tray) return tray
+  tray = new Tray(trayIcon())
+  updateTrayMenu()
+  tray.on('click', showMainWindow)
+  return tray
 }
 
 function buildGlobalArgs(config) {
@@ -158,6 +318,7 @@ function runTdl(event, payload) {
   }
 
   const child = spawn(tdlPath, args, { shell: false, env: { ...process.env, PATH: augmentedPathEnv() } })
+  activeTdlChildren.set(taskId, child)
 
   child.stdout.on('data', data => {
     event.sender.send('tdl:log', { taskId, level: 'stdout', text: data.toString() })
@@ -166,14 +327,23 @@ function runTdl(event, payload) {
     event.sender.send('tdl:log', { taskId, level: 'stderr', text: data.toString() })
   })
   child.on('error', err => {
+    activeTdlChildren.delete(taskId)
     event.sender.send('tdl:log', { taskId, level: 'error', text: `\n[启动失败] ${err.message}\n[建议] 打包后的 macOS App 可能找不到终端里的 tdl。请在设置里把 tdl 路径改成 /opt/homebrew/bin/tdl 或 /usr/local/bin/tdl；本版也会自动尝试这些路径。\n` })
     event.sender.send('tdl:done', { taskId, code: -1 })
   })
   child.on('close', code => {
+    activeTdlChildren.delete(taskId)
     event.sender.send('tdl:log', { taskId, level: code === 0 ? 'info' : 'error', text: `\n[任务结束] exit code: ${code}\n` })
     event.sender.send('tdl:done', { taskId, code })
   })
   return { taskId, pid: child.pid, args }
+}
+
+function stopTdlTask(taskId) {
+  const child = activeTdlChildren.get(taskId)
+  if (!child) return { ok: false, message: '任务不在运行中或已结束' }
+  child.kill('SIGTERM')
+  return { ok: true, message: '已请求停止任务' }
 }
 
 
@@ -256,17 +426,7 @@ function fetchChatsFromTdl(event, { filter = '', cache = false, reason = 'refres
   return new Promise((resolve, reject) => {
     let stdout = ''
     let stderr = ''
-    // Ensure the parent directory of export/download output exists when -o is used.
-  const outputIndex = args.findIndex(item => String(item) === '-o' || String(item) === '--output')
-  if (outputIndex >= 0 && args[outputIndex + 1]) {
-    try {
-      fs.mkdirSync(path.dirname(String(args[outputIndex + 1])), { recursive: true })
-    } catch (err) {
-      event.sender.send('tdl:log', { taskId, level: 'warning', text: `[输出目录创建失败] ${err.message}\n` })
-    }
-  }
-
-  const child = spawn(tdlPath, args, { shell: false, env: { ...process.env, PATH: augmentedPathEnv() } })
+    const child = spawn(tdlPath, args, { shell: false, env: { ...process.env, PATH: augmentedPathEnv() } })
     child.stdout.on('data', data => { stdout += data.toString() })
     child.stderr.on('data', data => { stderr += data.toString() })
     child.on('error', err => reject(new Error(err.message)))
@@ -367,9 +527,177 @@ function analyzeExportFile(filePath) {
   }
 }
 
+function checkChatLatestMessage(chat) {
+  const peer = String(chat || '').trim()
+  if (!peer) return Promise.resolve({ ok: false, message: '频道为空' })
+
+  const config = readConfig()
+  const tdlPath = resolveTdlPath(config.tdlPath || 'tdl')
+  const tempDir = path.join(app.getPath('temp'), 'hopetdl-checks')
+  fs.mkdirSync(tempDir, { recursive: true })
+  const tempFile = path.join(tempDir, `latest_${Date.now()}_${Math.random().toString(16).slice(2)}.json`)
+  const args = [...buildGlobalArgs(config), 'chat', 'export', '-c', peer, '-T', 'last', '-i', '1', '--all', '--with-content', '-o', tempFile]
+
+  return new Promise(resolve => {
+    let stderr = ''
+    const child = spawn(tdlPath, args, { shell: false, env: { ...process.env, PATH: augmentedPathEnv() } })
+    child.stderr.on('data', data => { stderr += data.toString() })
+    child.on('error', err => {
+      try { fs.rmSync(tempFile, { force: true }) } catch {}
+      resolve({ ok: false, message: err.message, chat: peer })
+    })
+    child.on('close', code => {
+      try {
+        if (code !== 0) {
+          resolve({ ok: false, code, message: stderr || `tdl exited with code ${code}`, chat: peer })
+          return
+        }
+        const analysis = analyzeExportFile(tempFile)
+        if (!analysis.ok) {
+          resolve({ ok: false, code, message: analysis.reason || '未识别到最新消息', chat: peer })
+          return
+        }
+        resolve({
+          ok: true,
+          chat: peer,
+          latestMessageId: analysis.maxId,
+          checkedAt: new Date().toLocaleString()
+        })
+      } catch (err) {
+        resolve({ ok: false, code, message: err.message, chat: peer })
+      } finally {
+        try { fs.rmSync(tempFile, { force: true }) } catch {}
+      }
+    })
+  })
+}
+
+
+function startCommentForward(event, payload = {}) {
+  if (currentCommentForwardWorker) {
+    return { ok: false, message: '已有评论区转发任务正在运行，请先停止当前任务' }
+  }
+
+  const config = readConfig()
+  const taskId = payload.taskId || `comment_forward_${Date.now()}`
+  const worker = new CommentForwardWorker({
+    ...payload,
+    taskId,
+    tdlPath: resolveTdlPath(payload.tdlPath || config.tdlPath || 'tdl'),
+    globalArgs: buildGlobalArgs(config),
+    pathEnv: augmentedPathEnv(),
+    baseOutputDir: payload.baseOutputDir || config.defaultDownloadDir || defaultOutputDir()
+  })
+
+  currentCommentForwardWorker = worker
+  const sender = event.sender
+
+  worker.on('log', data => {
+    if (!sender.isDestroyed()) sender.send('tdl:log', data)
+  })
+
+  worker.on('progress', data => {
+    if (!sender.isDestroyed()) sender.send('comment-forward:progress', data)
+  })
+
+  worker.on('status', data => {
+    if (!sender.isDestroyed()) sender.send('comment-forward:status', data)
+    if (['done', 'error', 'stopped'].includes(data.status)) {
+      if (!sender.isDestroyed()) sender.send('tdl:done', { taskId, code: data.status === 'done' ? 0 : 1 })
+      currentCommentForwardWorker = null
+    }
+  })
+
+  worker.start()
+  return { ok: true, taskId, workDir: worker.paths.root, message: '评论区顺序转发任务已开始' }
+}
+
+function stopCommentForward() {
+  if (!currentCommentForwardWorker) return { ok: false, message: '当前没有正在运行的评论区转发任务' }
+  currentCommentForwardWorker.abort()
+  return { ok: true, message: '已请求停止评论区转发任务' }
+}
+
+function runCheckCommand(command, args = [], timeoutMs = 8000) {
+  return new Promise(resolve => {
+    let stdout = ''
+    let stderr = ''
+    const child = spawn(command, args, { shell: false, env: { ...process.env, PATH: augmentedPathEnv() } })
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM')
+      resolve({ ok: false, code: -1, stdout, stderr, message: '检查超时' })
+    }, timeoutMs)
+
+    child.stdout.on('data', data => { stdout += data.toString() })
+    child.stderr.on('data', data => { stderr += data.toString() })
+    child.on('error', err => {
+      clearTimeout(timer)
+      resolve({ ok: false, code: -1, stdout, stderr, message: err.message })
+    })
+    child.on('close', code => {
+      clearTimeout(timer)
+      resolve({
+        ok: code === 0,
+        code,
+        stdout,
+        stderr,
+        message: code === 0 ? '正常' : (stderr || stdout || `退出码 ${code}`).trim()
+      })
+    })
+  })
+}
+
+async function checkEnvironment() {
+  const config = readConfig()
+  const tdlPath = resolveTdlPath(config.tdlPath || 'tdl')
+  const outputDir = config.defaultDownloadDir || defaultOutputDir()
+  const checks = []
+
+  const version = await runCheckCommand(tdlPath, ['version'])
+  checks.push({
+    key: 'tdl',
+    label: 'tdl version',
+    ok: version.ok,
+    detail: version.ok ? (version.stdout || version.stderr).trim() : version.message,
+    meta: tdlPath
+  })
+
+  try {
+    fs.mkdirSync(outputDir, { recursive: true })
+    fs.accessSync(outputDir, fs.constants.W_OK)
+    checks.push({ key: 'output', label: '输出目录可写', ok: true, detail: outputDir })
+  } catch (err) {
+    checks.push({ key: 'output', label: '输出目录可写', ok: false, detail: err.message, meta: outputDir })
+  }
+
+  checks.push({
+    key: 'ns',
+    label: '命名空间 ns',
+    ok: !!String(config.ns || '').trim(),
+    detail: String(config.ns || '').trim() || '未设置'
+  })
+
+  checks.push({
+    key: 'proxy',
+    label: '代理',
+    ok: !config.proxy || /^(socks5|http|https):\/\//i.test(String(config.proxy)),
+    detail: config.proxy || '未设置'
+  })
+
+  return {
+    ok: checks.every(item => item.ok),
+    checkedAt: new Date().toLocaleString(),
+    checks
+  }
+}
+
 ipcMain.handle('config:get', () => readConfig())
 ipcMain.handle('config:set', (_, config) => saveConfig(config))
 ipcMain.handle('tdl:run', (event, payload) => runTdl(event, payload))
+ipcMain.handle('tdl:stop', (_, taskId) => stopTdlTask(taskId))
+ipcMain.handle('environment:check', () => checkEnvironment())
+ipcMain.handle('comment-forward:start', (event, payload) => startCommentForward(event, payload))
+ipcMain.handle('comment-forward:stop', () => stopCommentForward())
 ipcMain.handle('dialog:openFile', async (_, options = {}) => {
   const result = await dialog.showOpenDialog({ properties: ['openFile'], ...options })
   return result.canceled ? null : result.filePaths[0]
@@ -380,6 +708,7 @@ ipcMain.handle('dialog:openDirectory', async (_, options = {}) => {
 })
 ipcMain.handle('path:defaultOutputDir', () => defaultOutputDir())
 ipcMain.handle('export:analyze', (_, filePath) => analyzeExportFile(filePath))
+ipcMain.handle('chats:latest-message', (_, chat) => checkChatLatestMessage(chat))
 ipcMain.handle('shell:showItemInFolder', (_, filePath) => {
   if (filePath) shell.showItemInFolder(filePath)
   return true
@@ -426,6 +755,30 @@ ipcMain.handle('chats:list', async (event, options = {}) => {
   const info = chatCacheInfo(readConfig())
   return info.chats
 })
+ipcMain.handle('app:show', () => {
+  showMainWindow()
+  return true
+})
+ipcMain.handle('app:status', (_, status = {}) => {
+  appStatus = {
+    ...appStatus,
+    runningTasks: Number(status.runningTasks || 0),
+    failedTasks: Number(status.failedTasks || 0),
+    enabledSchedules: Number(status.enabledSchedules || 0),
+    totalSchedules: Number(status.totalSchedules || 0),
+    schedulerPaused: !!status.schedulerPaused,
+    lastScheduleCheck: status.lastScheduleCheck || ''
+  }
+  updateDockBadge()
+  updateTrayMenu()
+  return true
+})
+ipcMain.handle('app:quit', () => {
+  isQuitting = true
+  shutdownRunningTasks()
+  app.quit()
+  return true
+})
 
 app.setName('HopeTDL')
 
@@ -433,11 +786,16 @@ app.whenReady().then(() => {
   if (process.platform === 'darwin' && app.dock) {
     app.dock.setIcon(appIconPath())
   }
+  createTray()
   createWindow()
 })
+app.on('before-quit', () => {
+  isQuitting = true
+  shutdownRunningTasks()
+})
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  if (isQuitting) return
 })
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  showMainWindow()
 })

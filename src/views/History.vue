@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
-import { appState } from '../main'
+import { message } from '../ui/naive'
+import { appState } from '../state'
 import { getExportRecords, getForwardRecords, getUploadRecords } from '../historyStore'
 
 const activeTab = ref('exports')
@@ -14,7 +14,7 @@ const uploadRows = computed(() => { refreshKey.value; return getUploadRecords() 
 function refresh() { refreshKey.value++ }
 
 function copyText(text) {
-  navigator.clipboard.writeText(String(text || '')).then(() => ElMessage.success('已复制命令'))
+  navigator.clipboard.writeText(String(text || '')).then(() => message.success('已复制命令'))
 }
 
 function applyExport(row) {
@@ -34,7 +34,7 @@ function applyUpload(row) {
 
 function showFile(filePath) {
   if (!filePath) {
-    ElMessage.info('没有可打开的文件路径')
+    message.info('没有可打开的文件路径')
     return
   }
   window.tdlApi.showItemInFolder(filePath)
@@ -42,11 +42,11 @@ function showFile(filePath) {
 
 async function openPath(path) {
   if (!path) {
-    ElMessage.info('没有可打开的路径')
+    message.info('没有可打开的路径')
     return
   }
   const result = await window.tdlApi.openPath(path)
-  if (result && !result.ok) ElMessage.error(result.message || '打开失败')
+  if (result && !result.ok) message.error(result.message || '打开失败')
 }
 
 onMounted(refresh)
@@ -58,72 +58,114 @@ onMounted(refresh)
 
   <div class="card">
     <div class="history-toolbar">
-      <el-tabs v-model="activeTab" style="flex:1; min-width:280px;">
-        <el-tab-pane :label="`导出历史 ${exportsRows.length}`" name="exports" />
-        <el-tab-pane :label="`转发历史 ${forwardRows.length}`" name="forwards" />
-        <el-tab-pane :label="`上传历史 ${uploadRows.length}`" name="uploads" />
-      </el-tabs>
-      <el-button @click="refresh">刷新历史</el-button>
+      <n-tabs v-model:value="activeTab" style="flex:1; min-width:280px;">
+        <n-tab-pane :tab="`导出历史 ${exportsRows.length}`" name="exports" />
+        <n-tab-pane :tab="`转发历史 ${forwardRows.length}`" name="forwards" />
+        <n-tab-pane :tab="`上传历史 ${uploadRows.length}`" name="uploads" />
+      </n-tabs>
+      <n-button @click="refresh">刷新历史</n-button>
     </div>
 
-    <el-table v-if="activeTab === 'exports'" :data="exportsRows" style="width:100%" border stripe empty-text="暂无导出记录">
-      <el-table-column prop="time" label="时间" width="170" />
-      <el-table-column prop="chat" label="源聊天 -c" width="170" />
-      <el-table-column prop="usedInput" label="本次 -i" width="150" />
-      <el-table-column prop="maxId" label="最大ID" width="110" />
-      <el-table-column prop="input" label="下次建议 -i" width="210" />
-      <el-table-column prop="output" label="输出文件" min-width="280" show-overflow-tooltip />
-      <el-table-column label="操作" width="290" fixed="right">
-        <template #default="scope">
-          <div class="action-row">
-            <el-button size="small" type="primary" plain @click="applyExport(scope.row)">套用</el-button>
-            <el-button size="small" @click="copyText(scope.row.command)">复制命令</el-button>
-            <el-button size="small" @click="showFile(scope.row.output)">打开位置</el-button>
-          </div>
-        </template>
-      </el-table-column>
-    </el-table>
+    <div v-if="activeTab === 'exports'" class="table-scroll">
+      <n-table :bordered="false" striped>
+        <thead>
+          <tr>
+            <th style="width:170px;">时间</th>
+            <th style="width:170px;">源聊天 -c</th>
+            <th style="width:150px;">本次 -i</th>
+            <th style="width:110px;">最大ID</th>
+            <th style="width:210px;">下次建议 -i</th>
+            <th style="min-width:280px;">输出文件</th>
+            <th style="width:290px;">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-if="!exportsRows.length"><td colspan="7" class="empty-cell">暂无导出记录</td></tr>
+          <tr v-for="row in exportsRows" :key="`${row.time}-${row.output}`">
+            <td>{{ row.time }}</td>
+            <td>{{ row.chat }}</td>
+            <td>{{ row.usedInput }}</td>
+            <td>{{ row.maxId }}</td>
+            <td>{{ row.input }}</td>
+            <td class="truncate-cell link-like" title="点击复制路径" @click="copyText(row.output)">{{ row.output }}</td>
+            <td>
+              <div class="action-row dense">
+                <n-button size="small" type="primary" secondary @click="applyExport(row)">套用</n-button>
+                <n-button size="small" @click="copyText(row.command)">复制命令</n-button>
+                <n-button size="small" @click="showFile(row.output)">打开位置</n-button>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </n-table>
+    </div>
 
-    <el-table v-if="activeTab === 'forwards'" :data="forwardRows" style="width:100%" border stripe empty-text="暂无转发记录">
-      <el-table-column prop="time" label="时间" width="170" />
-      <el-table-column prop="from" label="来源" min-width="240" show-overflow-tooltip />
-      <el-table-column prop="targetLabel" label="目标聊天" min-width="180" show-overflow-tooltip />
-      <el-table-column prop="threadLabel" label="话题" width="170" show-overflow-tooltip />
-      <el-table-column prop="mode" label="模式" width="90" />
-      <el-table-column label="Dry Run" width="90">
-        <template #default="scope">{{ scope.row.dryRun ? '是' : '否' }}</template>
-      </el-table-column>
-      <el-table-column label="操作" width="310" fixed="right">
-        <template #default="scope">
-          <div class="action-row">
-            <el-button size="small" type="primary" plain @click="applyForward(scope.row)">套用</el-button>
-            <el-button size="small" @click="copyText(scope.row.command)">复制命令</el-button>
-            <el-button size="small" @click="showFile(scope.row.from)">打开来源</el-button>
-          </div>
-        </template>
-      </el-table-column>
-    </el-table>
+    <div v-if="activeTab === 'forwards'" class="table-scroll">
+      <n-table :bordered="false" striped>
+        <thead>
+          <tr>
+            <th style="width:170px;">时间</th>
+            <th style="min-width:240px;">来源</th>
+            <th style="min-width:180px;">目标聊天</th>
+            <th style="width:170px;">话题</th>
+            <th style="width:90px;">模式</th>
+            <th style="width:90px;">Dry Run</th>
+            <th style="width:310px;">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-if="!forwardRows.length"><td colspan="7" class="empty-cell">暂无转发记录</td></tr>
+          <tr v-for="row in forwardRows" :key="`${row.time}-${row.from}`">
+            <td>{{ row.time }}</td>
+            <td class="truncate-cell link-like" title="点击复制来源" @click="copyText(row.from)">{{ row.from }}</td>
+            <td class="truncate-cell">{{ row.targetLabel }}</td>
+            <td class="truncate-cell">{{ row.threadLabel }}</td>
+            <td>{{ row.mode }}</td>
+            <td>{{ row.dryRun ? '是' : '否' }}</td>
+            <td>
+              <div class="action-row dense">
+                <n-button size="small" type="primary" secondary @click="applyForward(row)">套用</n-button>
+                <n-button size="small" @click="copyText(row.command)">复制命令</n-button>
+                <n-button size="small" @click="showFile(row.from)">打开来源</n-button>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </n-table>
+    </div>
 
-    <el-table v-if="activeTab === 'uploads'" :data="uploadRows" style="width:100%" border stripe empty-text="暂无上传记录">
-      <el-table-column prop="time" label="时间" width="170" />
-      <el-table-column prop="path" label="上传路径" min-width="260" show-overflow-tooltip />
-      <el-table-column prop="chat" label="目标聊天" width="170" />
-      <el-table-column prop="topic" label="话题" width="120" />
-      <el-table-column prop="caption" label="Caption" min-width="160" show-overflow-tooltip />
-      <el-table-column label="选项" width="150">
-        <template #default="scope">
-          <span class="mini-muted">{{ scope.row.photo ? '图片 ' : '' }}{{ scope.row.remove ? '上传后删除' : '' }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="310" fixed="right">
-        <template #default="scope">
-          <div class="action-row">
-            <el-button size="small" type="primary" plain @click="applyUpload(scope.row)">套用</el-button>
-            <el-button size="small" @click="copyText(scope.row.command)">复制命令</el-button>
-            <el-button size="small" @click="openPath(scope.row.path)">打开路径</el-button>
-          </div>
-        </template>
-      </el-table-column>
-    </el-table>
+    <div v-if="activeTab === 'uploads'" class="table-scroll">
+      <n-table :bordered="false" striped>
+        <thead>
+          <tr>
+            <th style="width:170px;">时间</th>
+            <th style="min-width:260px;">上传路径</th>
+            <th style="width:170px;">目标聊天</th>
+            <th style="width:120px;">话题</th>
+            <th style="min-width:160px;">Caption</th>
+            <th style="width:150px;">选项</th>
+            <th style="width:310px;">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-if="!uploadRows.length"><td colspan="7" class="empty-cell">暂无上传记录</td></tr>
+          <tr v-for="row in uploadRows" :key="`${row.time}-${row.path}`">
+            <td>{{ row.time }}</td>
+            <td class="truncate-cell link-like" title="点击复制路径" @click="copyText(row.path)">{{ row.path }}</td>
+            <td>{{ row.chat }}</td>
+            <td>{{ row.topic }}</td>
+            <td class="truncate-cell">{{ row.caption }}</td>
+            <td><span class="mini-muted">{{ row.photo ? '图片 ' : '' }}{{ row.remove ? '上传后删除' : '' }}</span></td>
+            <td>
+              <div class="action-row dense">
+                <n-button size="small" type="primary" secondary @click="applyUpload(row)">套用</n-button>
+                <n-button size="small" @click="copyText(row.command)">复制命令</n-button>
+                <n-button size="small" @click="openPath(row.path)">打开路径</n-button>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </n-table>
+    </div>
   </div>
 </template>

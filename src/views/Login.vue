@@ -10,14 +10,14 @@ function run() { runTask('login', args.value, `登录：${type.value}`) }
   <h1 class="page-title">登录账号</h1>
   <p class="page-desc">二维码登录、验证码登录、Telegram Desktop 导入都可以从这里启动。</p>
   <div class="card">
-    <el-radio-group v-model="type">
-      <el-radio-button label="qr">二维码登录</el-radio-button>
-      <el-radio-button label="code">手机号验证码</el-radio-button>
-      <el-radio-button label="desktop">Desktop 导入</el-radio-button>
-    </el-radio-group>
+    <n-radio-group v-model:value="type">
+      <n-radio-button value="qr">二维码登录</n-radio-button>
+      <n-radio-button value="code">手机号验证码</n-radio-button>
+      <n-radio-button value="desktop">Desktop 导入</n-radio-button>
+    </n-radio-group>
     <div style="height:16px"></div>
     <CommandPreview :command="commandText(args)" />
     <div style="height:16px"></div>
-    <el-button type="primary" @click="run">开始登录</el-button>
+    <n-button type="primary" @click="run">开始登录</n-button>
   </div>
 </template>

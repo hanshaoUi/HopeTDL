@@ -1,4 +1,4 @@
-import { appState } from './main'
+import { appState } from './state'
 import { chatId, chatTitle, chatUsername } from './chatCache'
 
 export const EXPORT_MEMORY_KEY = 'hopetdl.export.memory.v1'

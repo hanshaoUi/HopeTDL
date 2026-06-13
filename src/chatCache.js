@@ -1,4 +1,4 @@
-import { appState } from './main'
+import { appState } from './state'
 
 function applyCacheInfo(info) {
   const chats = Array.isArray(info?.chats) ? info.chats : []

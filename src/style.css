@@ -24,9 +24,16 @@
   --red: #f56c6c;
 }
 * { box-sizing: border-box; }
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
 body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
-.app-shell { display: flex; height: 100vh; overflow: hidden; }
-.sidebar { width: 238px; background: #0b0d12; border-right: 1px solid var(--line); padding: 18px 14px; }
+.app-shell { display: flex; width: 100%; height: 100dvh; max-height: 100dvh; overflow: hidden; }
+.sidebar { width: 238px; flex: 0 0 238px; background: #0b0d12; border-right: 1px solid var(--line); padding: 18px 14px; overflow-y: auto; }
 .brand { font-size: 21px; font-weight: 800; margin-bottom: 5px; }
 .brand-sub { color: var(--muted); font-size: 12px; margin-bottom: 24px; }
 .nav-item { height: 42px; display: flex; align-items: center; padding: 0 12px; border-radius: 10px; cursor: pointer; color: #c6cce0; margin-bottom: 5px; }
@@ -38,6 +45,9 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter,
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 /* The content area should fill the available vertical space when the log panel is moved below */
@@ -54,6 +64,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter,
 .log-panel {
   width: 100%;
   height: 220px;
+  flex: 0 0 220px;
   background: #0b0d12;
   border-top: 1px solid var(--line);
   border-left: none;
@@ -129,45 +140,6 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter,
   border: 1px solid #dcdfe6;
   color: var(--text);
 }
-/* Style overrides for Element Plus form components. Different styles are applied depending on the current theme */
-
-/* Dark theme overrides */
-:root[data-theme='dark'] .el-form-item__label {
-  color: #cfd5e6 !important;
-}
-:root[data-theme='dark'] .el-input__wrapper,
-:root[data-theme='dark'] .el-textarea__inner,
-:root[data-theme='dark'] .el-select__wrapper {
-  background-color: #10131b !important;
-  box-shadow: 0 0 0 1px #343b50 inset !important;
-}
-:root[data-theme='dark'] .el-input__inner,
-:root[data-theme='dark'] .el-textarea__inner {
-  color: #eef1f8 !important;
-}
-:root[data-theme='dark'] .el-radio,
-:root[data-theme='dark'] .el-checkbox {
-  color: #d6dbea !important;
-}
-
-/* Light theme overrides */
-:root[data-theme='light'] .el-form-item__label {
-  color: var(--text) !important;
-}
-:root[data-theme='light'] .el-input__wrapper,
-:root[data-theme='light'] .el-textarea__inner,
-:root[data-theme='light'] .el-select__wrapper {
-  background-color: #ffffff !important;
-  box-shadow: 0 0 0 1px #dcdfe6 inset !important;
-}
-:root[data-theme='light'] .el-input__inner,
-:root[data-theme='light'] .el-textarea__inner {
-  color: var(--text) !important;
-}
-:root[data-theme='light'] .el-radio,
-:root[data-theme='light'] .el-checkbox {
-  color: var(--text) !important;
-}
 .stat { background: var(--panel2); border-radius: 14px; padding: 16px; border: 1px solid var(--line); }
 .stat .label { color: var(--muted); font-size: 12px; }
 .stat .value { margin-top: 7px; font-size: 22px; font-weight: 800; }
@@ -204,7 +176,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter,
   align-items: center;
   width: 100%;
 }
-.chat-select-wrap .el-button {
+.chat-select-wrap .n-button {
   flex: 0 0 auto;
 }
 .chat-option {
@@ -266,6 +238,125 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter,
 .favorite-button.off { color:var(--muted); }
 .history-toolbar { display:flex; gap:10px; align-items:center; justify-content:space-between; margin-bottom:14px; flex-wrap:wrap; }
 .mini-muted { color:var(--muted); font-size:12px; }
+.action-row.dense { gap:6px; }
+.section-actions { margin-top: 12px; }
+.show-log-button { margin: 0 22px 10px auto; width: 88px; }
+.log-heading {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.log-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.table-meta {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+.table-scroll table {
+  min-width: 980px;
+}
+.truncate-cell {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.empty-cell {
+  color: var(--muted);
+  text-align: center;
+  padding: 18px;
+}
+.link-like {
+  cursor: pointer;
+  color: var(--blue);
+}
+.table-title {
+  font-weight: 700;
+}
+.row-details {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.row-details summary {
+  cursor: pointer;
+  color: var(--blue);
+}
+.topic-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.dialog-html p {
+  margin: 0 0 8px;
+}
+.env-check-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.env-check-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel2);
+}
+.advanced-toggle {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 0 0 16px 130px;
+}
+.task-center-card {
+  margin-top: 16px;
+}
+.task-center-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+.task-table {
+  margin-top: 14px;
+}
+.schedule-builder {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto minmax(160px, 180px) minmax(180px, 220px) auto;
+  gap: 10px;
+  align-items: center;
+}
+.schedule-builder-secondary {
+  grid-template-columns: minmax(260px, 420px) 1fr;
+  margin-top: 10px;
+}
+.native-input {
+  width: 100%;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: var(--panel2);
+  color: var(--text);
+  font: inherit;
+}
+.error-text {
+  color: var(--red);
+}
 
 /* Make task logs selectable/copyable in packaged Electron. */
 .log-panel,
@@ -283,4 +374,80 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter,
   background: #ffffff;
   color: var(--text);
   border-color: var(--line);
+}
+
+@media (max-width: 1023px) {
+  .sidebar {
+    width: 156px;
+    flex-basis: 156px;
+    padding: 14px 10px;
+  }
+  .brand {
+    font-size: 18px;
+  }
+  .brand-sub {
+    font-size: 11px;
+    margin-bottom: 16px;
+  }
+  .nav-item {
+    height: 36px;
+    padding: 0 9px;
+    font-size: 13px;
+    border-radius: 8px;
+  }
+  .content {
+    padding: 16px;
+  }
+  .page-title {
+    font-size: 22px;
+  }
+  .grid-2,
+  .grid-3 {
+    grid-template-columns: 1fr;
+  }
+  .card,
+  .section-card {
+    border-radius: 12px;
+    padding: 14px;
+  }
+  .log-panel {
+    height: 180px;
+    flex-basis: 180px;
+  }
+  .log-title {
+    gap: 10px;
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .log-toolbar {
+    width: 100%;
+  }
+  .chat-select-wrap,
+  .topic-select-wrap {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .env-check-grid {
+    grid-template-columns: 1fr;
+  }
+  .advanced-toggle,
+  .section-card .action-row[style*="margin-left"] {
+    margin-left: 0 !important;
+  }
+  .comment-forward-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .task-center-toolbar {
+    flex-direction: column;
+  }
+  .task-center-toolbar .action-row {
+    width: 100%;
+  }
+  .schedule-builder {
+    grid-template-columns: 1fr;
+  }
+  .show-log-button {
+    margin-right: 16px;
+  }
 }

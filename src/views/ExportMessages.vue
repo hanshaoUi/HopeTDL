@@ -1,10 +1,10 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { message } from '../ui/naive'
 import { commandText, runTask } from '../utils'
 import CommandPreview from '../components/CommandPreview.vue'
 import ChatSelect from '../components/ChatSelect.vue'
-import { appState } from '../main.js'
+import { appState } from '../state.js'
 import { chatId as getChatId, chatTitle as getChatTitle, findChatByValue } from '../chatCache'
 import { touchRecentChat } from '../historyStore'
 
@@ -18,6 +18,11 @@ const selectedSourceChat = ref(null)
 const pendingExportTaskId = ref('')
 const pendingExportRecord = ref(null)
 const autoOutput = ref(true)
+const typeOptions = [
+  { label: '按消息 ID', value: 'id' },
+  { label: '最近 N 条', value: 'last' },
+  { label: '全部', value: 'all' }
+]
 
 const HISTORY_KEY = 'hopetdl.export.memory.v1'
 const exportMemory = ref({ last: null, chats: {}, records: [] })
@@ -140,8 +145,12 @@ function writeAllMemory(memory) {
   try {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(memory))
   } catch (err) {
-    ElMessage.error('保存导出记录失败')
+    message.error('保存导出记录失败')
   }
+}
+
+function copyText(text, successText = '已复制') {
+  navigator.clipboard.writeText(String(text || '')).then(() => message.success(successText))
 }
 
 function loadMemory() {
@@ -220,24 +229,24 @@ function applyRecord(record, mode = 'all') {
 
 function useLastExport() {
   if (!exportMemory.value.last) {
-    ElMessage.info('还没有上次导出记录')
+    message.info('还没有上次导出记录')
     return
   }
   applyRecord(exportMemory.value.last, 'all')
   autoOutput.value = true
   updateSmartOutput({ force: true })
-  ElMessage.success('已读取上次的 -c 和 -i')
+  message.success('已读取上次的 -c 和 -i')
 }
 
 function useChatLastInput() {
   if (!chatLastRecord.value) {
-    ElMessage.info('当前聊天还没有历史 -i 记录')
+    message.info('当前聊天还没有历史 -i 记录')
     return
   }
   applyRecord(chatLastRecord.value, 'chat-id')
   autoOutput.value = true
   updateSmartOutput({ force: true })
-  ElMessage.success('已读取当前聊天对应的上次 -i')
+  message.success('已读取当前聊天对应的上次 -i')
 }
 
 
@@ -275,10 +284,10 @@ async function finalizeExportMemory(record) {
     const nextRecord = applyAnalyzeResultToRecord(record, analysis)
     saveMemory(nextRecord)
     input.value = nextRecord.input || ''
-    ElMessage.success(`已从导出文件识别最大消息 ID：${analysis.maxId}，下次建议 -i：${analysis.nextInput}`)
+    message.success(`已从导出文件识别最大消息 ID：${analysis.maxId}，下次建议 -i：${analysis.nextInput}`)
   } else {
     saveMemory(record)
-    ElMessage.warning(`导出完成，但未能自动识别下一次 -i：${analysis?.reason || '未知原因'}`)
+    message.warning(`导出完成，但未能自动识别下一次 -i：${analysis?.reason || '未知原因'}`)
   }
 }
 
@@ -344,15 +353,15 @@ async function run() {
     const remembered = getChatMemory(chat.value)
     if (remembered?.input) {
       applyRecord(remembered, 'chat-id')
-      ElMessage.success('已自动读取当前聊天上次的 -i')
+      message.success('已自动读取当前聊天上次的 -i')
     } else {
-      ElMessage.error('当前导出类型需要填写 -i。请填写输入值，或先点击“读取该聊天”。')
+      message.error('当前导出类型需要填写 -i。请填写输入值，或先点击“读取该聊天”。')
       return
     }
   }
 
   if (canAutoAnalyzeNextInput()) {
-    ElMessage.info('本次未填写 -i，将按 tdl 默认范围导出；完成后会从输出 JSON 自动识别最大消息 ID，并生成下次的 -i。')
+    message.info('本次未填写 -i，将按 tdl 默认范围导出；完成后会从输出 JSON 自动识别最大消息 ID，并生成下次的 -i。')
   }
 
   const row = sourceChatRow()
@@ -373,8 +382,8 @@ async function run() {
   <h1 class="page-title">导出消息</h1>
   <p class="page-desc">支持按消息 ID、最近 N 条等方式导出。会自动记住上一次的 -c 和 -i，并按命名空间与聊天 ID 分开保存。</p>
   <div class="card">
-    <el-form label-width="120px">
-      <el-form-item label="源聊天 -c">
+    <n-form label-width="120px">
+      <n-form-item label="源聊天 -c">
         <div style="display:flex; gap:10px; align-items:center; width:100%">
           <ChatSelect
             v-model="chat"
@@ -382,74 +391,89 @@ async function run() {
             button-text="更新缓存"
             @select="handleSourceSelect"
           />
-          <el-button @click="useLastExport">读取上次</el-button>
+          <n-button @click="useLastExport">读取上次</n-button>
         </div>
-      </el-form-item>
+      </n-form-item>
       <div class="grid-2">
-        <el-form-item label="导出类型">
-          <el-select v-model="type"><el-option label="按消息 ID" value="id"/><el-option label="最近 N 条" value="last"/><el-option label="全部" value="all"/></el-select>
-        </el-form-item>
-        <el-form-item label="输入值 -i">
+        <n-form-item label="导出类型">
+          <n-select v-model:value="type" :options="typeOptions" />
+        </n-form-item>
+        <n-form-item label="输入值 -i">
           <div style="display:flex; gap:10px; align-items:center; width:100%">
-            <el-input v-model="input" placeholder="例如 1213,1500 或 100" style="flex:1" />
-            <el-button @click="useChatLastInput">读取该聊天</el-button>
+            <n-input v-model:value="input" placeholder="例如 1213,1500 或 100" style="flex:1" />
+            <n-button @click="useChatLastInput">读取该聊天</n-button>
           </div>
-        </el-form-item>
+        </n-form-item>
       </div>
-      <el-alert
+      <n-alert
         v-if="requiresInput() && !input"
         type="warning"
-        show-icon
-        :closable="false"
+        
+        :show-icon="true" :closable="false"
         style="margin-bottom:16px"
         title="最近 N 条需要 -i；按消息 ID 留空时会全量导出，完成后自动读取输出 JSON 的最大消息 ID，生成下次续导范围。"
       />
-      <el-alert
+      <n-alert
         v-if="canAutoAnalyzeNextInput()"
         type="info"
-        show-icon
-        :closable="false"
+        
+        :show-icon="true" :closable="false"
         style="margin-bottom:16px"
         title="未填写 -i：本次会按 tdl 默认范围导出；完成后软件会读取 output JSON，记录最大消息 ID，并自动生成下次 -i。"
       />
-      <el-alert
+      <n-alert
         v-if="chatLastRecord"
         type="info"
-        show-icon
-        :closable="false"
+        
+        :show-icon="true" :closable="false"
         style="margin-bottom:16px"
         :title="`当前聊天上次导出：-i ${chatLastRecord.input || '未填写'}，时间：${chatLastRecord.time || '-'}`"
       />
-      <el-form-item label="选项"><el-checkbox v-model="all">包含普通文字 --all</el-checkbox><el-checkbox v-model="raw">Raw 原始结构 --raw</el-checkbox></el-form-item>
-      <el-form-item label="输出文件">
+      <n-form-item label="选项"><n-checkbox v-model:checked="all">包含普通文字 --all</n-checkbox><n-checkbox v-model:checked="raw">Raw 原始结构 --raw</n-checkbox></n-form-item>
+      <n-form-item label="输出文件">
         <div style="display:flex; gap:10px; align-items:center; width:100%">
-          <el-input v-model="output" placeholder="messages.json 绝对路径" style="flex:1" />
-          <el-button @click="pickOutput">选择</el-button>
+          <n-input v-model:value="output" placeholder="messages.json 绝对路径" style="flex:1" />
+          <n-button @click="pickOutput">选择</n-button>
         </div>
-      </el-form-item>
-    </el-form>
+      </n-form-item>
+    </n-form>
     <CommandPreview :command="commandText(args)" />
     <div style="height:16px"></div>
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-      <el-button type="primary" @click="run">开始导出</el-button>
-      <el-button @click="saveMemory">仅保存当前 -c / -i</el-button>
+      <n-button type="primary" @click="run">开始导出</n-button>
+      <n-button @click="saveMemory">仅保存当前 -c / -i</n-button>
     </div>
   </div>
 
   <div class="card" v-if="recentRecords.length">
     <div class="card-title">最近导出记录</div>
-    <el-table :data="recentRecords" style="width:100%" size="small">
-      <el-table-column prop="time" label="时间" width="170" />
-      <el-table-column prop="chat" label="-c 源聊天" width="180" />
-      <el-table-column prop="usedInput" label="本次 -i" width="130" />
-      <el-table-column prop="maxId" label="最大ID" width="110" />
-      <el-table-column prop="input" label="下次建议 -i" width="190" />
-      <el-table-column prop="output" label="输出文件" />
-      <el-table-column label="操作" width="110">
-        <template #default="scope">
-          <el-button size="small" type="primary" plain @click="applyRecordAndSmart(scope.row, 'all')">套用</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+    <div class="table-scroll">
+      <n-table :bordered="false" size="small" striped>
+        <thead>
+          <tr>
+            <th style="width:170px;">时间</th>
+            <th style="width:180px;">-c 源聊天</th>
+            <th style="width:130px;">本次 -i</th>
+            <th style="width:110px;">最大ID</th>
+            <th style="width:190px;">下次建议 -i</th>
+            <th style="min-width:280px;">输出文件</th>
+            <th style="width:110px;">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="row in recentRecords" :key="`${row.time}-${row.output}`">
+            <td>{{ row.time }}</td>
+            <td>{{ row.chat }}</td>
+            <td>{{ row.usedInput }}</td>
+            <td>{{ row.maxId }}</td>
+            <td>{{ row.input }}</td>
+            <td class="truncate-cell link-like" title="点击复制路径" @click="copyText(row.output, '输出路径已复制')">{{ row.output }}</td>
+            <td>
+              <n-button size="small" type="primary" secondary @click="applyRecordAndSmart(row, 'all')">套用</n-button>
+            </td>
+          </tr>
+        </tbody>
+      </n-table>
+    </div>
   </div>
 </template>

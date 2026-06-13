@@ -1,11 +1,11 @@
 {
   "name": "tdl-gui-prototype",
-  "version": "0.1.0",
+  "version": "1.6.0",
   "private": true,
-  "description": "A GUI prototype for common tdl workflows: chats, export, forward, upload and logs.",
+  "description": "HopeTDL GUI with comment-thread ordered forwarding and keyword filtering. - comment forward MSG_ID_INVALID fallback - skip post when no comments",
   "main": "electron/main.cjs",
   "scripts": {
-    "dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
+    "dev": "concurrently -k \"vite\" \"wait-on tcp:5174 && electron .\"",
     "build": "vite build",
     "start": "electron .",
     "build:dist": "npm run build && electron-builder",
@@ -14,18 +14,17 @@
     "build:linux": "npm run build && electron-builder --linux"
   },
   "dependencies": {
-    "@vitejs/plugin-vue": "latest",
-    "vite": "latest",
-    "vue": "latest",
-    "element-plus": "latest",
-    "@element-plus/icons-vue": "latest",
-    "electron-store": "latest"
+    "@vitejs/plugin-vue": "6.0.7",
+    "electron-store": "11.0.2",
+    "naive-ui": "2.44.1",
+    "vite": "8.0.16",
+    "vue": "3.5.35"
   },
   "devDependencies": {
-    "electron": "latest",
-    "concurrently": "latest",
-    "wait-on": "latest",
-    "electron-builder": "latest"
+    "concurrently": "10.0.3",
+    "electron": "42.3.3",
+    "electron-builder": "26.15.2",
+    "wait-on": "9.0.10"
   },
   "build": {
     "appId": "com.hope.tdlgui",

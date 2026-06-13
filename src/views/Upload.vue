@@ -3,8 +3,8 @@ import { ref, computed, onMounted } from 'vue'
 import { commandText, runTask } from '../utils'
 import CommandPreview from '../components/CommandPreview.vue'
 import ChatSelect from '../components/ChatSelect.vue'
-import { appState } from '../main.js'
-import { ElMessage } from 'element-plus'
+import { appState } from '../state.js'
+import { message } from '../ui/naive'
 import { findChatByValue } from '../chatCache'
 import { saveUploadRecord, touchRecentChat } from '../historyStore'
 const path = ref('')
@@ -20,6 +20,10 @@ function getTopics(row) {
 }
 
 const targetTopics = computed(() => getTopics(selectedTargetChat.value))
+const targetTopicOptions = computed(() => targetTopics.value.map(item => ({
+  label: `${item.title || item.id} / ${item.id}`,
+  value: String(item.id)
+})))
 
 function handleTargetSelect(row) {
   selectedTargetChat.value = row
@@ -66,7 +70,7 @@ onMounted(() => {
 
 function run() {
   if (!path.value || !chat.value) {
-    ElMessage.error('请先填写上传路径和目标聊天')
+    message.error('请先填写上传路径和目标聊天')
     return
   }
   const row = selectedTargetChat.value || findChatByValue(chat.value, appState.cachedChats || [])
@@ -88,50 +92,44 @@ function run() {
   <h1 class="page-title">上传文件</h1>
   <p class="page-desc">上传文件或文件夹到指定聊天，可指定话题和 caption。</p>
   <div class="card">
-    <el-form label-width="120px">
+    <n-form label-width="120px">
       <!-- Wrap the input and button in a flex container to prevent line breaks -->
-      <el-form-item label="上传路径">
+      <n-form-item label="上传路径">
         <div style="display:flex; gap:10px; align-items:center; width:100%">
-          <el-input v-model="path" placeholder="文件夹路径" style="flex:1" />
+          <n-input v-model:value="path" placeholder="文件夹路径" style="flex:1" />
           <!-- Remove margin-left and rely on flex gap for spacing -->
-          <el-button @click="pickPath">选择文件夹</el-button>
+          <n-button @click="pickPath">选择文件夹</n-button>
         </div>
-      </el-form-item>
+      </n-form-item>
       <div class="grid-2">
-        <el-form-item label="目标聊天">
+        <n-form-item label="目标聊天">
           <ChatSelect
             v-model="chat"
             placeholder="从对话列表选择目标，或手动输入 @channel / ID"
             button-text="更新缓存"
             @select="handleTargetSelect"
           />
-        </el-form-item>
-        <el-form-item label="话题 ID">
-          <el-select
+        </n-form-item>
+        <n-form-item label="话题 ID">
+          <n-select
             v-if="targetTopics.length"
-            v-model="topic"
+            v-model:value="topic"
             filterable
-            allow-create
+            tag
             default-first-option
             clearable
+            :options="targetTopicOptions"
             placeholder="从该聊天的话题中选择，或手动输入"
             style="width:100%"
-          >
-            <el-option
-              v-for="item in targetTopics"
-              :key="String(item.id)"
-              :label="`${item.title || item.id} / ${item.id}`"
-              :value="String(item.id)"
-            />
-          </el-select>
-          <el-input v-else v-model="topic" placeholder="可选" />
-        </el-form-item>
+          />
+          <n-input v-else v-model:value="topic" placeholder="可选" />
+        </n-form-item>
       </div>
-      <el-form-item label="Caption"><el-input v-model="caption" placeholder="可选" /></el-form-item>
-      <el-form-item label="选项"><el-checkbox v-model="photo">作为图片上传</el-checkbox><el-checkbox v-model="remove">上传后删除本地</el-checkbox></el-form-item>
-    </el-form>
+      <n-form-item label="Caption"><n-input v-model:value="caption" placeholder="可选" /></n-form-item>
+      <n-form-item label="选项"><n-checkbox v-model:checked="photo">作为图片上传</n-checkbox><n-checkbox v-model:checked="remove">上传后删除本地</n-checkbox></n-form-item>
+    </n-form>
     <CommandPreview :command="commandText(args)" />
     <div style="height:16px"></div>
-    <el-button type="primary" @click="run">开始上传</el-button>
+    <n-button type="primary" @click="run">开始上传</n-button>
   </div>
 </template>
