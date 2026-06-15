@@ -4,6 +4,7 @@ import { chatId, chatTitle, chatUsername } from './chatCache'
 export const EXPORT_MEMORY_KEY = 'hopetdl.export.memory.v1'
 export const FORWARD_HISTORY_KEY = 'hopetdl.forward.history.v1'
 export const UPLOAD_HISTORY_KEY = 'hopetdl.upload.history.v1'
+export const DOWNLOAD_HISTORY_KEY = 'hopetdl.download.history.v1'
 export const CHAT_PREFS_KEY = 'hopetdl.chat.prefs.v1'
 
 export function nsKey() {
@@ -123,6 +124,14 @@ export function getUploadRecords(ns = nsKey()) {
 
 export function saveUploadRecord(record, ns = nsKey()) {
   return saveScopedRecord(UPLOAD_HISTORY_KEY, { type: 'upload', ...record }, ns)
+}
+
+export function getDownloadRecords(ns = nsKey()) {
+  return getScopedHistory(DOWNLOAD_HISTORY_KEY, ns).records || []
+}
+
+export function saveDownloadRecord(record, ns = nsKey()) {
+  return saveScopedRecord(DOWNLOAD_HISTORY_KEY, { type: 'download', ...record }, ns)
 }
 
 export function findLastUploadForChat(chat, ns = nsKey()) {

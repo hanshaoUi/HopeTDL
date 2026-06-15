@@ -357,6 +357,55 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter,
 .error-text {
   color: var(--red);
 }
+.task-detail-grid .stat {
+  min-height: 96px;
+}
+.task-detail-value {
+  font-size: 15px !important;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.task-detail-section {
+  margin-top: 14px;
+}
+.task-detail-box {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel2);
+  padding: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.task-detail-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  overflow-x: auto;
+}
+.schedule-event-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.schedule-event-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel2);
+}
+.schedule-event-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.schedule-event-text {
+  line-height: 1.5;
+  word-break: break-word;
+}
 
 /* Make task logs selectable/copyable in packaged Electron. */
 .log-panel,

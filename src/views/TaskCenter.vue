@@ -13,8 +13,11 @@ import {
   stopTask,
   toggleSchedule
 } from '../utils'
+import { isTaskFailed, isTaskInterrupted, isTaskRunning, TASK_STATE, taskStatusType } from '../taskState'
 
 const statusFilter = ref('全部')
+const selectedTaskId = ref('')
+const selectedScheduleId = ref('')
 const scheduleDraft = ref({
   taskId: '',
   mode: 'once',
@@ -26,9 +29,12 @@ const scheduleDraft = ref({
 
 const statusOptions = [
   { label: '全部', value: '全部' },
+  { label: '排队中', value: '排队中' },
   { label: '运行中', value: '运行中' },
   { label: '成功', value: '成功' },
+  { label: '部分成功', value: '部分成功' },
   { label: '失败', value: '失败' },
+  { label: '已中断', value: '已中断' },
   { label: '已停止', value: '已停止' }
 ]
 
@@ -37,10 +43,13 @@ const filteredTasks = computed(() => {
   return appState.tasks.filter(task => task.status === statusFilter.value)
 })
 
-const runningCount = computed(() => appState.tasks.filter(task => task.status === '运行中').length)
+const runningCount = computed(() => appState.tasks.filter(isTaskRunning).length)
 const successCount = computed(() => appState.tasks.filter(task => task.status === '成功').length)
-const failedCount = computed(() => appState.tasks.filter(task => task.status === '失败').length)
+const failedCount = computed(() => appState.tasks.filter(isTaskFailed).length)
+const interruptedCount = computed(() => appState.tasks.filter(isTaskInterrupted).length)
 const enabledScheduleCount = computed(() => appState.schedules.filter(schedule => schedule.enabled).length)
+const selectedTask = computed(() => appState.tasks.find(task => task.id === selectedTaskId.value) || null)
+const selectedSchedule = computed(() => appState.schedules.find(schedule => schedule.id === selectedScheduleId.value) || null)
 const schedulableTaskOptions = computed(() => appState.tasks
   .filter(task => task.type !== 'comment-forward' && Array.isArray(task.args) && task.args.length)
   .slice(0, 50)
@@ -53,16 +62,25 @@ const triggerOptions = [
   { label: '频道有更新才执行', value: 'chat-update' }
 ]
 
-function statusType(status) {
-  if (status === '运行中') return 'warning'
-  if (status === '成功') return 'success'
-  if (status === '失败') return 'error'
-  if (status === '已停止') return 'info'
-  return 'default'
-}
-
 function taskCommand(task) {
   return task.command || commandText(task.args || [])
+}
+
+function taskSummary(task) {
+  if (!task) return ''
+  return task.summary || '-'
+}
+
+function scheduleSummary(schedule) {
+  if (!schedule) return ''
+  return schedule.lastDecision || schedule.lastStatus || '未运行'
+}
+
+function scheduleEventType(kind) {
+  if (['error'].includes(kind)) return 'error'
+  if (['skip', 'baseline', 'disabled'].includes(kind)) return 'warning'
+  if (['run-success', 'enabled', 'ready'].includes(kind)) return 'success'
+  return 'info'
 }
 
 function toDatetimeLocal(value) {
@@ -130,11 +148,20 @@ async function handleRetry(task) {
 async function handleStop(task) {
   const result = await stopTask(task)
   if (result?.ok) return
-  if (task.status === '运行中') {
+  if (isTaskRunning(task)) {
+    task.state = TASK_STATE.STOPPED
     task.status = '已停止'
     task.finishedAt = new Date().toLocaleString()
     persistTasks()
   }
+}
+
+function openTaskDetails(task) {
+  selectedTaskId.value = task?.id || ''
+}
+
+function openScheduleDetails(schedule) {
+  selectedScheduleId.value = schedule?.id || ''
 }
 
 async function createSchedule() {
@@ -216,7 +243,7 @@ async function removeSchedule(schedule) {
 }
 
 async function clearFinished() {
-  const removableCount = appState.tasks.filter(task => task.status !== '运行中').length
+  const removableCount = appState.tasks.filter(task => !isTaskRunning(task)).length
   if (!removableCount) {
     message.info('没有可清理的已完成任务')
     return
@@ -232,15 +259,53 @@ async function clearFinished() {
     return
   }
 
-  appState.tasks = appState.tasks.filter(task => task.status === '运行中')
+  appState.tasks = appState.tasks.filter(isTaskRunning)
   persistTasks()
   message.success('已清理已完成任务')
+}
+
+async function retryInterruptedTasks() {
+  const targets = appState.tasks.filter(isTaskInterrupted).slice(0, 10)
+  if (!targets.length) {
+    message.info('没有可重试的中断任务')
+    return
+  }
+  try {
+    await confirmHtml(`<p>将重新发起 ${targets.length} 个已中断任务。</p>`, '重试中断任务', {
+      confirmButtonText: '开始重试',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+  } catch {
+    return
+  }
+  let success = 0
+  for (const task of targets) {
+    try {
+      await retryTask(task)
+      success += 1
+    } catch {}
+  }
+  message.success(`已重新发起 ${success} / ${targets.length} 个中断任务`)
 }
 </script>
 
 <template>
   <h1 class="page-title">任务中心</h1>
   <p class="page-desc">集中查看、停止、重试和复制所有 tdl 任务，切换页面后任务状态仍保留。</p>
+
+  <n-alert
+    v-if="appState.recovery.interruptedCount"
+    type="warning"
+    :show-icon="true"
+    :closable="false"
+    :title="`检测到 ${appState.recovery.interruptedCount} 个上次未完成的任务。它们已被标记为已中断，可逐条重试或清理。`"
+    style="margin-bottom:16px"
+  />
+  <div v-if="interruptedCount" class="action-row section-actions" style="margin-bottom:16px">
+    <n-button secondary @click="statusFilter = '已中断'">仅看已中断</n-button>
+    <n-button type="primary" secondary @click="retryInterruptedTasks">批量重试已中断</n-button>
+  </div>
 
   <div class="grid-3">
     <div class="stat">
@@ -343,6 +408,7 @@ async function clearFinished() {
             <td>
               <div class="action-row dense">
                 <n-button size="small" @click="toggleSchedule(schedule)">{{ schedule.enabled ? '停用' : '启用' }}</n-button>
+                <n-button size="small" tertiary @click="openScheduleDetails(schedule)">详情</n-button>
                 <n-button size="small" secondary @click="runScheduleNow(schedule)">立即运行</n-button>
                 <n-button size="small" type="error" @click="removeSchedule(schedule)">删除</n-button>
               </div>
@@ -350,6 +416,55 @@ async function clearFinished() {
           </tr>
         </tbody>
       </n-table>
+    </div>
+  </div>
+
+  <div v-if="selectedSchedule" class="card task-center-card">
+    <div class="task-center-toolbar">
+      <div>
+        <div class="card-title">计划详情</div>
+        <div class="mini-muted">{{ selectedSchedule.name || selectedSchedule.type }} / {{ selectedSchedule.id }}</div>
+      </div>
+      <n-tag :type="selectedSchedule.enabled ? 'success' : 'default'">{{ selectedSchedule.enabled ? '已启用' : '已停用' }}</n-tag>
+    </div>
+
+    <div class="grid-3 task-detail-grid">
+      <div class="stat">
+        <div class="label">触发方式</div>
+        <div class="value task-detail-value">{{ selectedSchedule.triggerMode === 'chat-update' ? '频道更新触发' : '到点执行' }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">下次运行</div>
+        <div class="value task-detail-value">{{ formatTime(selectedSchedule.nextRunAt) }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">最近结果</div>
+        <div class="value task-detail-value">{{ scheduleSummary(selectedSchedule) }}</div>
+      </div>
+    </div>
+
+    <div class="task-detail-section">
+      <div class="table-meta">规则摘要</div>
+      <div class="task-detail-box">
+        检测频道：{{ selectedSchedule.watchChat || '-' }}<br>
+        已处理到主消息 ID：{{ selectedSchedule.lastSeenMessageId || '-' }}<br>
+        上次检测：{{ selectedSchedule.lastCheckedAt || '-' }}<br>
+        执行次数：{{ selectedSchedule.runCount || 0 }}
+      </div>
+    </div>
+
+    <div class="task-detail-section">
+      <div class="table-meta">事件记录</div>
+      <div v-if="!(selectedSchedule.eventHistory || []).length" class="task-detail-box">暂无事件记录</div>
+      <div v-else class="schedule-event-list">
+        <div v-for="event in selectedSchedule.eventHistory" :key="event.id" class="schedule-event-item">
+          <n-tag size="small" :type="scheduleEventType(event.kind)">{{ event.kind }}</n-tag>
+          <div class="schedule-event-main">
+            <div class="schedule-event-text">{{ event.text }}</div>
+            <div class="mini-muted">{{ event.time }}</div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -387,11 +502,16 @@ async function clearFinished() {
             <td>
               <div class="table-title">{{ task.title || task.type }}</div>
               <div class="row-details truncate-cell">{{ taskCommand(task) }}</div>
+              <div class="row-details">摘要：{{ taskSummary(task) }}</div>
+              <div v-if="task.failureLabel" class="row-details error-text">失败分类：{{ task.failureLabel }}</div>
+              <div v-if="task.failedCount" class="row-details error-text">
+                失败 {{ task.failedCount }} 条：{{ (task.failedIds || []).join(', ') }}
+              </div>
               <div v-if="task.errorMessage" class="row-details error-text">{{ task.errorMessage }}</div>
             </td>
             <td>{{ task.type }}</td>
             <td>
-              <n-tag :type="statusType(task.status)">
+              <n-tag :type="taskStatusType(task)">
                 {{ task.status }}
               </n-tag>
             </td>
@@ -399,14 +519,70 @@ async function clearFinished() {
             <td>{{ task.finishedAt || '-' }}</td>
             <td>
               <div class="action-row dense">
+                <n-button size="small" tertiary @click="openTaskDetails(task)">详情</n-button>
                 <n-button size="small" @click="copyTaskCommand(task)">复制命令</n-button>
                 <n-button size="small" secondary @click="handleRetry(task)">重试</n-button>
-                <n-button size="small" type="error" :disabled="task.status !== '运行中'" @click="handleStop(task)">停止</n-button>
+                <n-button size="small" type="error" :disabled="!isTaskRunning(task)" @click="handleStop(task)">停止</n-button>
               </div>
             </td>
           </tr>
         </tbody>
       </n-table>
+    </div>
+  </div>
+
+  <div v-if="selectedTask" class="card task-center-card">
+    <div class="task-center-toolbar">
+      <div>
+        <div class="card-title">任务详情</div>
+        <div class="mini-muted">{{ selectedTask.title || selectedTask.type }} / {{ selectedTask.id }}</div>
+      </div>
+      <n-tag :type="taskStatusType(selectedTask)">{{ selectedTask.status }}</n-tag>
+    </div>
+
+    <div class="grid-3 task-detail-grid">
+      <div class="stat">
+        <div class="label">任务类型</div>
+        <div class="value task-detail-value">{{ selectedTask.type }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">开始时间</div>
+        <div class="value task-detail-value">{{ selectedTask.createdAt || '-' }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">结束时间</div>
+        <div class="value task-detail-value">{{ selectedTask.finishedAt || '-' }}</div>
+      </div>
+    </div>
+
+    <div class="task-detail-section">
+      <div class="table-meta">摘要</div>
+      <div class="task-detail-box">{{ taskSummary(selectedTask) }}</div>
+    </div>
+
+    <div class="task-detail-section">
+      <div class="table-meta">执行命令</div>
+      <pre class="task-detail-box task-detail-code">{{ taskCommand(selectedTask) }}</pre>
+    </div>
+
+    <div v-if="selectedTask.errorMessage" class="task-detail-section">
+      <div class="table-meta">错误信息</div>
+      <div class="task-detail-box error-text">{{ selectedTask.errorMessage }}</div>
+    </div>
+
+    <div v-if="selectedTask.failureLabel" class="task-detail-section">
+      <div class="table-meta">失败分类</div>
+      <div class="task-detail-box error-text">{{ selectedTask.failureLabel }}<span v-if="selectedTask.failureCategory">（{{ selectedTask.failureCategory }}）</span></div>
+    </div>
+
+    <div v-if="selectedTask.recoveryReason" class="task-detail-section">
+      <div class="table-meta">恢复信息</div>
+      <div class="task-detail-box">{{ selectedTask.recoveryReason }}</div>
+    </div>
+
+    <div v-if="selectedTask.failedCount || (selectedTask.failedIds || []).length" class="task-detail-section">
+      <div class="table-meta">失败条目</div>
+      <div class="task-detail-box">{{ selectedTask.failedCount || (selectedTask.failedIds || []).length }} 条：{{ (selectedTask.failedIds || []).join(', ') || '-' }}</div>
     </div>
   </div>
 </template>

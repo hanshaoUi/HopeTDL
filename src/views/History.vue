@@ -2,13 +2,14 @@
 import { ref, computed, onMounted } from 'vue'
 import { message } from '../ui/naive'
 import { appState } from '../state'
-import { getExportRecords, getForwardRecords, getUploadRecords } from '../historyStore'
+import { getDownloadRecords, getExportRecords, getForwardRecords, getUploadRecords } from '../historyStore'
 
 const activeTab = ref('exports')
 const refreshKey = ref(0)
 
 const exportsRows = computed(() => { refreshKey.value; return getExportRecords() })
 const forwardRows = computed(() => { refreshKey.value; return getForwardRecords() })
+const downloadRows = computed(() => { refreshKey.value; return getDownloadRecords() })
 const uploadRows = computed(() => { refreshKey.value; return getUploadRecords() })
 
 function refresh() { refreshKey.value++ }
@@ -30,6 +31,11 @@ function applyForward(row) {
 function applyUpload(row) {
   appState.selectedUploadRecord = row
   appState.activeView = 'upload'
+}
+
+function applyDownload(row) {
+  appState.selectedDownloadRecord = row
+  appState.activeView = 'download'
 }
 
 function showFile(filePath) {
@@ -54,13 +60,14 @@ onMounted(refresh)
 
 <template>
   <h1 class="page-title">历史记录</h1>
-  <p class="page-desc">集中查看导出、转发、上传记录。可以套用参数、复制命令、打开文件位置。</p>
+  <p class="page-desc">集中查看导出、转发、下载、上传记录。可以套用参数、复制命令、打开文件位置。</p>
 
   <div class="card">
     <div class="history-toolbar">
       <n-tabs v-model:value="activeTab" style="flex:1; min-width:280px;">
         <n-tab-pane :tab="`导出历史 ${exportsRows.length}`" name="exports" />
         <n-tab-pane :tab="`转发历史 ${forwardRows.length}`" name="forwards" />
+        <n-tab-pane :tab="`下载历史 ${downloadRows.length}`" name="downloads" />
         <n-tab-pane :tab="`上传历史 ${uploadRows.length}`" name="uploads" />
       </n-tabs>
       <n-button @click="refresh">刷新历史</n-button>
@@ -127,6 +134,36 @@ onMounted(refresh)
                 <n-button size="small" type="primary" secondary @click="applyForward(row)">套用</n-button>
                 <n-button size="small" @click="copyText(row.command)">复制命令</n-button>
                 <n-button size="small" @click="showFile(row.from)">打开来源</n-button>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </n-table>
+    </div>
+
+    <div v-if="activeTab === 'downloads'" class="table-scroll">
+      <n-table :bordered="false" striped>
+        <thead>
+          <tr>
+            <th style="width:170px;">时间</th>
+            <th style="width:100px;">来源</th>
+            <th style="min-width:220px;">目录</th>
+            <th style="min-width:280px;">摘要</th>
+            <th style="width:310px;">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-if="!downloadRows.length"><td colspan="5" class="empty-cell">暂无下载记录</td></tr>
+          <tr v-for="row in downloadRows" :key="row.id">
+            <td>{{ row.time }}</td>
+            <td>{{ row.sourceType === 'file' ? '导出文件' : '消息链接' }}</td>
+            <td class="truncate-cell link-like" title="点击复制路径" @click="copyText(row.dir)">{{ row.dir || '-' }}</td>
+            <td class="truncate-cell">{{ row.command }}</td>
+            <td>
+              <div class="action-row dense">
+                <n-button size="small" type="primary" secondary @click="applyDownload(row)">套用</n-button>
+                <n-button size="small" @click="copyText(row.command)">复制命令</n-button>
+                <n-button size="small" @click="openPath(row.dir)" :disabled="!row.dir">打开目录</n-button>
               </div>
             </td>
           </tr>

@@ -38,6 +38,17 @@ async function pickPath() {
   const dir = await window.tdlApi.openDirectory({ defaultPath: path.value || appState.config?.defaultDownloadDir || await window.tdlApi.getDefaultOutputDir() })
   if (dir) path.value = dir
 }
+
+async function pickFile() {
+  const file = await window.tdlApi.openFile({
+    defaultPath: path.value || appState.config?.defaultDownloadDir || await window.tdlApi.getDefaultOutputDir(),
+    filters: [
+      { name: 'Media', extensions: ['mkv', 'mp4', 'mov', 'avi', 'mp3', 'm4a', 'flac', 'jpg', 'jpeg', 'png', 'webp'] },
+      { name: 'All Files', extensions: ['*'] }
+    ]
+  })
+  if (file) path.value = file
+}
 const args = computed(() => {
   const a = ['upload']
   if (path.value) a.push('-p', path.value)
@@ -90,14 +101,13 @@ function run() {
 </script>
 <template>
   <h1 class="page-title">上传文件</h1>
-  <p class="page-desc">上传文件或文件夹到指定聊天，可指定话题和 caption。</p>
+  <p class="page-desc">上传单个文件或整个文件夹到指定聊天，可指定话题和 caption。</p>
   <div class="card">
     <n-form label-width="120px">
-      <!-- Wrap the input and button in a flex container to prevent line breaks -->
       <n-form-item label="上传路径">
         <div style="display:flex; gap:10px; align-items:center; width:100%">
-          <n-input v-model:value="path" placeholder="文件夹路径" style="flex:1" />
-          <!-- Remove margin-left and rely on flex gap for spacing -->
+          <n-input v-model:value="path" placeholder="文件或文件夹绝对路径，例如 /Users/hope/Desktop/4k hdr.mkv" style="flex:1" />
+          <n-button @click="pickFile">选择文件</n-button>
           <n-button @click="pickPath">选择文件夹</n-button>
         </div>
       </n-form-item>

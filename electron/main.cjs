@@ -527,6 +527,41 @@ function analyzeExportFile(filePath) {
   }
 }
 
+function readCommentForwardProgress(workDir) {
+  if (!workDir) return { ok: false, reason: '工作目录为空' }
+  const filePath = path.join(String(workDir), 'progress.json')
+  if (!fs.existsSync(filePath)) {
+    return { ok: false, reason: 'progress.json 不存在', filePath }
+  }
+  try {
+    const progress = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+    const doneEntries = Object.values(progress.done || {})
+    const failedEntries = Object.values(progress.failed || {})
+    const failedIds = failedEntries
+      .map(item => Number(item?.id))
+      .filter(id => Number.isSafeInteger(id))
+      .sort((a, b) => a - b)
+    return {
+      ok: true,
+      filePath,
+      updatedAt: progress.updatedAt || '',
+      doneCount: doneEntries.length,
+      failedCount: failedEntries.length,
+      failedIds,
+      failedItems: failedEntries
+        .map(item => ({
+          id: Number(item?.id),
+          error: item?.error || '',
+          failedAt: item?.failedAt || ''
+        }))
+        .filter(item => Number.isSafeInteger(item.id))
+        .sort((a, b) => a.id - b.id)
+    }
+  } catch (err) {
+    return { ok: false, reason: err.message, filePath }
+  }
+}
+
 function checkChatLatestMessage(chat) {
   const peer = String(chat || '').trim()
   if (!peer) return Promise.resolve({ ok: false, message: '频道为空' })
@@ -708,6 +743,7 @@ ipcMain.handle('dialog:openDirectory', async (_, options = {}) => {
 })
 ipcMain.handle('path:defaultOutputDir', () => defaultOutputDir())
 ipcMain.handle('export:analyze', (_, filePath) => analyzeExportFile(filePath))
+ipcMain.handle('comment-forward:progress:read', (_, workDir) => readCommentForwardProgress(workDir))
 ipcMain.handle('chats:latest-message', (_, chat) => checkChatLatestMessage(chat))
 ipcMain.handle('shell:showItemInFolder', (_, filePath) => {
   if (filePath) shell.showItemInFolder(filePath)

@@ -1,5 +1,12 @@
 import { appState } from './state'
 import { message } from './ui/naive'
+import {
+  TASK_STATE,
+  isTaskFinished,
+  normalizeTaskRecord,
+  normalizeTaskState,
+  taskStatusLabel
+} from './taskState'
 
 const TASKS_KEY = 'hopetdl.tasks.v1'
 const SCHEDULES_KEY = 'hopetdl.schedules.v1'
@@ -28,7 +35,7 @@ export function commandText(args) {
 
 export function persistTasks() {
   try {
-    const snapshot = appState.tasks.slice(0, 100)
+    const snapshot = appState.tasks.slice(0, 100).map(item => normalizeTaskRecord(item))
     localStorage.setItem(TASKS_KEY, JSON.stringify(snapshot))
   } catch {
     // Ignore storage failures; task state still works in memory.
@@ -45,18 +52,21 @@ export function persistSchedules() {
 
 export function createTask(type, args, title, extra = {}) {
   const id = extra.id || `${type}_${Date.now()}`
-  const task = {
+  const state = normalizeTaskState(extra.state || extra.status || TASK_STATE.RUNNING)
+  const task = normalizeTaskRecord({
     id,
     type,
     title,
-    status: extra.status || '运行中',
+    state,
+    status: taskStatusLabel(state),
     args: Array.isArray(args) ? args : [],
     createdAt: extra.createdAt || new Date().toLocaleString(),
     finishedAt: extra.finishedAt || '',
     exitCode: extra.exitCode ?? null,
+    summary: extra.summary || '',
     ...extra,
     id
-  }
+  })
   appState.tasks.unshift(task)
   persistTasks()
   return task
@@ -65,11 +75,17 @@ export function createTask(type, args, title, extra = {}) {
 export function updateTaskStatus(taskId, status, extra = {}) {
   const task = appState.tasks.find(t => t.id === taskId)
   if (!task) return null
+  const state = normalizeTaskState(status || extra.state || task.state || task.status)
   Object.assign(task, {
-    status,
-    ...extra
+    ...normalizeTaskRecord({
+      ...task,
+      ...extra,
+      state,
+      status: taskStatusLabel(state),
+      updatedAt: new Date().toLocaleString()
+    })
   })
-  if (!task.finishedAt && status !== '运行中') task.finishedAt = new Date().toLocaleString()
+  if (!task.finishedAt && isTaskFinished(task)) task.finishedAt = new Date().toLocaleString()
   persistTasks()
   return task
 }
@@ -88,6 +104,20 @@ export async function copyTaskCommand(task) {
 export async function retryTask(task) {
   if (!task) return null
   return runTask(task.type, task.args || [], task.title || task.type)
+}
+
+function scheduleEvent(schedule, kind, text, extra = {}) {
+  if (!schedule) return
+  const item = {
+    id: `schedule_event_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    time: new Date().toLocaleString(),
+    kind,
+    text: String(text || ''),
+    ...extra
+  }
+  schedule.eventHistory = [item, ...(Array.isArray(schedule.eventHistory) ? schedule.eventHistory : [])].slice(0, 20)
+  schedule.lastDecision = item.text
+  schedule.lastDecisionKind = kind
 }
 
 function nextRunAfter(schedule, from = Date.now()) {
@@ -235,9 +265,13 @@ export function createScheduleFromTask(task, options = {}) {
     lastRunAt: '',
     nextRunAt: 0,
     runCount: 0,
-    lastStatus: options.lastStatus || '未运行'
+    lastStatus: options.lastStatus || '未运行',
+    lastDecision: options.lastStatus || '未运行',
+    lastDecisionKind: 'created',
+    eventHistory: []
   }
   schedule.nextRunAt = nextRunAfter(schedule, schedule.mode === 'interval' ? Date.now() : 0)
+  scheduleEvent(schedule, 'created', `计划已创建：${schedule.lastStatus}`)
   appState.schedules.unshift(schedule)
   persistSchedules()
   return schedule
@@ -265,6 +299,7 @@ export function toggleSchedule(schedule) {
   if (schedule.enabled) {
     schedule.nextRunAt = nextRunAfter(schedule, schedule.mode === 'interval' ? Date.now() : 0)
   }
+  scheduleEvent(schedule, schedule.enabled ? 'enabled' : 'disabled', schedule.enabled ? '计划已启用' : '计划已停用')
   persistSchedules()
   return schedule
 }
@@ -275,12 +310,14 @@ export async function runScheduledTaskNow(schedule) {
     const exportArgs = schedule.nextExportArgs || []
     const exportOutput = outputPathFromArgs(exportArgs)
     if (!exportArgs.length || !exportOutput) throw new Error('缺少增量导出参数')
+    scheduleEvent(schedule, 'run', `开始执行：先导出增量，再转发到目标聊天`)
     await runTaskAndWait('export', exportArgs, `${schedule.name || schedule.type}（定时导出）`, { scheduleId: schedule.id })
     const forwardArgs = forwardArgsForIncrementalFile(schedule.args, exportOutput)
     const result = await runTaskAndWait('forward', forwardArgs, `${schedule.name || schedule.type}（定时转发）`, { scheduleId: schedule.id })
     schedule.lastRunAt = new Date().toLocaleString()
     schedule.runCount = Number(schedule.runCount || 0) + 1
     schedule.lastStatus = '已发起增量导出并转发'
+    scheduleEvent(schedule, 'run-success', `已发起增量导出并转发，游标推进到 ${schedule.pendingLastSeenMessageId || schedule.lastSeenMessageId || '-'}`)
     if (schedule.pendingLastSeenMessageId) schedule.lastSeenMessageId = schedule.pendingLastSeenMessageId
     schedule.nextArgs = null
     schedule.nextExportArgs = null
@@ -290,12 +327,16 @@ export async function runScheduledTaskNow(schedule) {
   }
   const taskTitle = `${schedule.name || schedule.type}（定时）`
   const runArgs = schedule.nextArgs || schedule.args
+  scheduleEvent(schedule, 'run', `开始执行：${schedule.triggerMode === 'chat-update' ? '检测后增量执行' : '按时间直接执行'}`)
   const result = schedule.triggerMode === 'chat-update'
     ? await runTaskAndWait(schedule.type, runArgs, taskTitle, { scheduleId: schedule.id })
     : await runTask(schedule.type, runArgs, taskTitle, { scheduleId: schedule.id })
   schedule.lastRunAt = new Date().toLocaleString()
   schedule.runCount = Number(schedule.runCount || 0) + 1
   schedule.lastStatus = '已发起'
+  scheduleEvent(schedule, 'run-success', schedule.triggerMode === 'chat-update'
+    ? `已发起增量执行，游标推进到 ${schedule.pendingLastSeenMessageId || schedule.lastSeenMessageId || '-'}`
+    : '已发起定时执行')
   if (schedule.pendingLastSeenMessageId) schedule.lastSeenMessageId = schedule.pendingLastSeenMessageId
   schedule.nextArgs = null
   schedule.pendingLastSeenMessageId = 0
@@ -309,6 +350,7 @@ async function shouldRunSchedule(schedule) {
   if (!chat) {
     schedule.lastStatus = '缺少检测频道'
     schedule.lastCheckedAt = new Date().toLocaleString()
+    scheduleEvent(schedule, 'skip', '跳过执行：缺少检测频道')
     persistSchedules()
     return false
   }
@@ -317,6 +359,7 @@ async function shouldRunSchedule(schedule) {
   schedule.lastCheckedAt = result?.checkedAt || new Date().toLocaleString()
   if (!result?.ok) {
     schedule.lastStatus = `检测失败：${result?.message || '未知错误'}`
+    scheduleEvent(schedule, 'error', schedule.lastStatus)
     persistSchedules()
     return false
   }
@@ -326,11 +369,13 @@ async function shouldRunSchedule(schedule) {
   if (!lastSeen) {
     schedule.lastSeenMessageId = latest
     schedule.lastStatus = `已建立基线：${latest}`
+    scheduleEvent(schedule, 'baseline', schedule.lastStatus)
     persistSchedules()
     return false
   }
   if (latest <= lastSeen) {
     schedule.lastStatus = `无更新：${latest}`
+    scheduleEvent(schedule, 'skip', `跳过执行：无更新，当前最新 ${latest}`)
     persistSchedules()
     return false
   }
@@ -347,6 +392,9 @@ async function shouldRunSchedule(schedule) {
   }
   schedule.pendingLastSeenMessageId = latest
   schedule.lastStatus = `发现更新：${start},${latest}`
+  scheduleEvent(schedule, 'ready', schedule.chain === 'export-forward'
+    ? `发现更新 ${start}-${latest}，将先导出增量 JSON 再转发`
+    : `发现更新 ${start}-${latest}，将直接执行增量任务`)
   persistSchedules()
   return true
 }
@@ -376,6 +424,7 @@ export function startTaskScheduler() {
         level: 'info',
         text: `[定时任务] 检查：${schedule.name || schedule.type}\n`
       })
+      scheduleEvent(schedule, 'check', `开始检查：${schedule.name || schedule.type}`)
       try {
         const shouldRun = await shouldRunSchedule(schedule)
         if (shouldRun) {
@@ -389,6 +438,7 @@ export function startTaskScheduler() {
         }
       } catch (err) {
         schedule.lastStatus = '发起失败'
+        scheduleEvent(schedule, 'error', `发起失败：${err?.message || err}`)
         persistSchedules()
         appState.logs.push({
           taskId: 'scheduler',

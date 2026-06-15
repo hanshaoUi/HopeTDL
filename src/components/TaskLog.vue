@@ -3,6 +3,7 @@ import { ref, computed, nextTick, watch } from 'vue'
 import { confirmHtml, message } from '../ui/naive'
 import { appState } from '../state'
 import { commandText } from '../utils'
+import { isTaskFailed } from '../taskState'
 
 // 文本框用于搜索日志中的关键字
 const searchText = ref('')
@@ -19,7 +20,7 @@ const taskOptions = computed(() => [
 ])
 
 const errorCount = computed(() => appState.logs.filter(log => ['stderr', 'error'].includes(log.level)).length)
-const failedTasks = computed(() => appState.tasks.filter(task => task.status === '失败'))
+const failedTasks = computed(() => appState.tasks.filter(isTaskFailed))
 
 // 根据搜索关键字过滤日志条目
 const filteredLogs = computed(() => {

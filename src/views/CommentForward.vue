@@ -37,6 +37,7 @@ const status = ref('idle')
 const currentTaskId = ref('')
 const currentWorkDir = ref('')
 const progress = ref({ current: 0, total: 0, id: '', stage: '' })
+const progressSummary = ref(null)
 
 const targetTopics = computed(() => Array.isArray(selectedTargetChat.value?.topics) ? selectedTargetChat.value.topics : [])
 const targetTopicOptions = computed(() => targetTopics.value.map(topic => ({
@@ -136,6 +137,21 @@ async function openWorkDir() {
   if (result && !result.ok) message.error(result.message || '打开失败')
 }
 
+async function loadProgressSummary(targetDir = currentWorkDir.value || workDir.value) {
+  if (!targetDir || !window.tdlApi?.readCommentForwardProgress) {
+    progressSummary.value = null
+    return
+  }
+  const result = await window.tdlApi.readCommentForwardProgress(targetDir)
+  progressSummary.value = result?.ok ? result : null
+  if (result?.ok && currentTaskId.value) {
+    updateTaskStatus(currentTaskId.value, status.value === 'running' ? '运行中' : status.value === 'done' ? '成功' : status.value === 'stopped' ? '已停止' : status.value === 'error' ? '失败' : '运行中', {
+      failedCount: result.failedCount || 0,
+      failedIds: result.failedIds || []
+    })
+  }
+}
+
 async function startTask() {
   if (!sourceChat.value) {
     message.error('请填写源频道 / 群组')
@@ -191,6 +207,7 @@ async function startTask() {
     return
   }
   currentWorkDir.value = result.workDir || ''
+  await loadProgressSummary(currentWorkDir.value)
   message.success(result.message || '任务已开始')
 }
 
@@ -221,6 +238,9 @@ onMounted(() => {
     if (currentTaskId.value && data.taskId !== currentTaskId.value) return
     status.value = data.status || status.value
     if (data.workDir) currentWorkDir.value = data.workDir
+    if (['done', 'error', 'stopped'].includes(data.status)) {
+      loadProgressSummary(data.workDir || currentWorkDir.value)
+    }
   })
 })
 </script>
@@ -356,7 +376,24 @@ onMounted(() => {
       <n-button type="primary" :disabled="running" @click="startTask">{{ running ? '运行中...' : '开始任务' }}</n-button>
       <n-button type="error" :disabled="!running" @click="stopTask">停止</n-button>
       <n-button :disabled="!currentWorkDir && !workDir" @click="openWorkDir">打开缓存目录</n-button>
+      <n-button secondary :disabled="!currentWorkDir && !workDir" @click="loadProgressSummary()">读取失败记录</n-button>
     </div>
+  </div>
+
+  <div v-if="progressSummary" class="card">
+    <div class="card-title">失败记录</div>
+    <div class="mini-muted">
+      已完成 {{ progressSummary.doneCount || 0 }} 条；失败 {{ progressSummary.failedCount || 0 }} 条；更新时间 {{ progressSummary.updatedAt || '-' }}
+    </div>
+    <div style="height:12px"></div>
+    <n-alert
+      v-if="progressSummary.failedCount"
+      type="warning"
+      :show-icon="true"
+      :closable="false"
+      :title="`失败消息 ID：${progressSummary.failedIds.join(', ')}`"
+    />
+    <div v-else class="empty-cell">当前没有失败记录</div>
   </div>
 
   <div class="card" v-if="advancedMode">

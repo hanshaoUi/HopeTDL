@@ -2,14 +2,23 @@
 import { computed } from 'vue'
 import { appState } from '../state'
 import { runTask } from '../utils'
+import { isTaskFailed, isTaskRunning, taskStatusType } from '../taskState'
 const latestTasks = computed(() => appState.tasks.slice(0, 8))
-const runningCount = computed(() => appState.tasks.filter(task => task.status === '运行中').length)
-const failedCount = computed(() => appState.tasks.filter(task => task.status === '失败').length)
+const runningCount = computed(() => appState.tasks.filter(isTaskRunning).length)
+const failedCount = computed(() => appState.tasks.filter(isTaskFailed).length)
 function checkVersion() { runTask('version', ['version'], '检测 tdl 版本') }
 </script>
 <template>
   <h1 class="page-title">仪表盘</h1>
-  <p class="page-desc">先检测 tdl，再从左侧进入登录、对话、导出、转发、上传。</p>
+  <p class="page-desc">先检测 tdl，再从左侧进入登录、对话、导出、转发、评论区转发、下载、上传。</p>
+  <n-alert
+    v-if="appState.recovery.interruptedCount"
+    type="warning"
+    :show-icon="true"
+    :closable="false"
+    :title="`检测到 ${appState.recovery.interruptedCount} 个上次未完成的任务，已标记为已中断。`"
+    style="margin-bottom:16px"
+  />
   <div class="grid-3">
     <div class="stat"><div class="label">当前命名空间</div><div class="value">{{ appState.config.ns || 'default' }}</div></div>
     <div class="stat"><div class="label">运行中任务</div><div class="value">{{ runningCount }}</div></div>
@@ -40,11 +49,11 @@ function checkVersion() { runTask('version', ['version'], '检测 tdl 版本') }
           <tr v-for="row in latestTasks" :key="row.id">
             <td>{{ row.title }}</td>
             <td>
-              <n-tag :type="row.status === '运行中' ? 'warning' : row.status === '成功' ? 'success' : row.status === '失败' ? 'error' : 'info'">
+              <n-tag :type="taskStatusType(row)">
                 {{ row.status }}
               </n-tag>
               <n-progress
-                v-if="row.status === '运行中'"
+                v-if="isTaskRunning(row)"
                 style="margin-top:4px;"
                 :percentage="50"
                 processing

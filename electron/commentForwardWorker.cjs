@@ -510,8 +510,12 @@ class CommentForwardWorker extends EventEmitter {
     }
 
     const progress = this.loadProgress()
+    const needCommentProcessing = this.config.includeComments && (this.config.forwardComments || this.config.skipPostWhenNoComments)
     if (this.config.skipPostWhenNoComments) {
       this.log('规则：无评论区时跳过整组，包括主消息', 'info')
+    }
+    if (!needCommentProcessing && this.config.includeComments) {
+      this.log('当前仅转发主消息，跳过评论区导出与处理', 'info')
     }
 
     try {
@@ -563,7 +567,7 @@ class CommentForwardWorker extends EventEmitter {
 
           // 开启“无评论区时跳过主消息”后，需要先导出并过滤评论区；
           // 只有评论区过滤后仍有内容，才转发主消息和评论区。
-          if (this.config.includeComments) {
+          if (needCommentProcessing) {
             if (postBlocked && this.config.skipCommentsWhenPostBlocked) {
               this.log(`主消息 ${id} 已被关键词屏蔽，按设置跳过其评论区`, 'warning')
             } else {
@@ -595,10 +599,10 @@ class CommentForwardWorker extends EventEmitter {
               this.log(`主消息 ${id} 过滤后为空，跳过主消息转发`, 'warning')
             }
 
-            if (this.config.includeComments && commentsFilter && commentCount > 0 && this.config.forwardComments) {
+            if (needCommentProcessing && commentsFilter && commentCount > 0 && this.config.forwardComments) {
               this.progress({ current: index, total: ids.length, id, stage: 'forward-comments' })
               await this.forwardJson(commentsFilter.file, `主消息 ${id} 的评论区`)
-            } else if (this.config.includeComments && commentsFilter && commentCount === 0) {
+            } else if (needCommentProcessing && commentsFilter && commentCount === 0) {
               this.log(`主消息 ${id} 没有可转发的评论区，跳过评论区转发`, 'info')
             }
           }

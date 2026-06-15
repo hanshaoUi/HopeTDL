@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('tdlApi', {
   saveFile: options => ipcRenderer.invoke('dialog:saveFile', options),
   getDefaultOutputDir: () => ipcRenderer.invoke('path:defaultOutputDir'),
   analyzeExportFile: filePath => ipcRenderer.invoke('export:analyze', filePath),
+  readCommentForwardProgress: workDir => ipcRenderer.invoke('comment-forward:progress:read', workDir),
   showItemInFolder: filePath => ipcRenderer.invoke('shell:showItemInFolder', filePath),
   openPath: targetPath => ipcRenderer.invoke('shell:openPath', targetPath),
   getChatCache: () => ipcRenderer.invoke('chats:cache:get'),

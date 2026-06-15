@@ -1,6 +1,6 @@
 {
   "name": "tdl-gui-prototype",
-  "version": "1.6.0",
+  "version": "0.2.1",
   "private": true,
   "description": "HopeTDL GUI with comment-thread ordered forwarding and keyword filtering. - comment forward MSG_ID_INVALID fallback - skip post when no comments",
   "main": "electron/main.cjs",

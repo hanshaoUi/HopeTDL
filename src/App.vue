@@ -4,6 +4,7 @@ import { appState } from './state'
 import { naiveTheme, themeOverrides } from './ui/naive'
 import { persistTasks, startTaskScheduler, updateTaskStatus } from './utils'
 import TaskLog from './components/TaskLog.vue'
+import { isTaskFailed, isTaskRunning, TASK_STATE } from './taskState'
 
 const Dashboard = defineAsyncComponent(() => import('./views/Dashboard.vue'))
 const Login = defineAsyncComponent(() => import('./views/Login.vue'))
@@ -11,14 +12,15 @@ const Chats = defineAsyncComponent(() => import('./views/Chats.vue'))
 const ExportMessages = defineAsyncComponent(() => import('./views/ExportMessages.vue'))
 const Forward = defineAsyncComponent(() => import('./views/Forward.vue'))
 const CommentForward = defineAsyncComponent(() => import('./views/CommentForward.vue'))
+const Download = defineAsyncComponent(() => import('./views/Download.vue'))
 const Upload = defineAsyncComponent(() => import('./views/Upload.vue'))
 const History = defineAsyncComponent(() => import('./views/History.vue'))
 const TaskCenter = defineAsyncComponent(() => import('./views/TaskCenter.vue'))
 const Settings = defineAsyncComponent(() => import('./views/Settings.vue'))
 
-const views = { dashboard: Dashboard, login: Login, chats: Chats, export: ExportMessages, forward: Forward, commentForward: CommentForward, upload: Upload, history: History, taskCenter: TaskCenter, settings: Settings }
+const views = { dashboard: Dashboard, login: Login, chats: Chats, export: ExportMessages, forward: Forward, commentForward: CommentForward, download: Download, upload: Upload, history: History, taskCenter: TaskCenter, settings: Settings }
 const nav = [
-  ['dashboard', '仪表盘'], ['login', '登录账号'], ['chats', '对话列表'], ['export', '导出消息'], ['forward', '转发消息'], ['commentForward', '评论区转发'], ['upload', '上传文件'], ['history', '历史记录'], ['taskCenter', '任务中心'], ['settings', '设置']
+  ['dashboard', '仪表盘'], ['login', '登录账号'], ['chats', '对话列表'], ['export', '导出消息'], ['forward', '转发消息'], ['commentForward', '评论区转发'], ['download', '下载媒体'], ['upload', '上传文件'], ['history', '历史记录'], ['taskCenter', '任务中心'], ['settings', '设置']
 ]
 let stopScheduler = null
 let offNavigate = null
@@ -35,8 +37,8 @@ function latestScheduleCheck() {
 function syncAppStatus() {
   if (!window.tdlApi?.updateAppStatus) return
   window.tdlApi.updateAppStatus({
-    runningTasks: appState.tasks.filter(task => task.status === '运行中').length,
-    failedTasks: appState.tasks.filter(task => task.status === '失败').length,
+    runningTasks: appState.tasks.filter(isTaskRunning).length,
+    failedTasks: appState.tasks.filter(isTaskFailed).length,
     enabledSchedules: appState.schedules.filter(schedule => schedule.enabled).length,
     totalSchedules: appState.schedules.length,
     schedulerPaused: appState.schedulerPaused,
@@ -46,6 +48,13 @@ function syncAppStatus() {
 
 onMounted(async () => {
   const tdlApi = window.tdlApi
+  if (appState.recovery?.interruptedCount) {
+    appState.logs.push({
+      taskId: 'app-recovery',
+      level: 'warning',
+      text: `[恢复] 检测到 ${appState.recovery.interruptedCount} 个上次未完成的任务，已标记为“已中断”。请在任务中心决定是否重试。\n`
+    })
+  }
   if (tdlApi) {
     appState.config = await tdlApi.getConfig()
   }
@@ -70,11 +79,11 @@ onMounted(async () => {
   tdlApi.onLog((data) => appState.logs.push(data))
   tdlApi.onDone((data) => {
     const existing = appState.tasks.find(t => t.id === data.taskId)
-    if (existing?.status === '已停止') {
-      updateTaskStatus(data.taskId, '已停止', { exitCode: data.code })
+    if (existing?.state === TASK_STATE.STOPPED) {
+      updateTaskStatus(data.taskId, TASK_STATE.STOPPED, { exitCode: data.code })
       return
     }
-    updateTaskStatus(data.taskId, data.code === 0 ? '成功' : '失败', {
+    updateTaskStatus(data.taskId, data.code === 0 ? TASK_STATE.SUCCESS : TASK_STATE.FAILED, {
       finishedAt: new Date().toLocaleString(),
       exitCode: data.code
     })
@@ -88,12 +97,8 @@ onMounted(async () => {
   offTasksStopped = tdlApi.onTasksStopped?.(() => {
     const now = new Date().toLocaleString()
     appState.tasks.forEach(task => {
-      if (task.status === '运行中') {
-        task.status = '已停止'
-        task.finishedAt = now
-      }
+      if (isTaskRunning(task)) updateTaskStatus(task.id, TASK_STATE.STOPPED, { finishedAt: now })
     })
-    persistTasks()
   })
   stopScheduler = startTaskScheduler()
   syncAppStatus()

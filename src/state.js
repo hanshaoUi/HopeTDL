@@ -1,12 +1,27 @@
 import { reactive } from 'vue'
+import { normalizeTaskRecord, recoverInterruptedTask } from './taskState'
 
 const TASKS_KEY = 'hopetdl.tasks.v1'
 const SCHEDULES_KEY = 'hopetdl.schedules.v1'
 
+const recoveryInfo = {
+  interruptedCount: 0,
+  interruptedTaskIds: []
+}
+
 function readStoredTasks() {
   try {
     const value = JSON.parse(localStorage.getItem(TASKS_KEY) || '[]')
-    return Array.isArray(value) ? value : []
+    return Array.isArray(value)
+      ? value.map(item => {
+          const recovered = recoverInterruptedTask(item)
+          if (recovered.state === 'interrupted') {
+            recoveryInfo.interruptedCount += 1
+            recoveryInfo.interruptedTaskIds.push(recovered.id)
+          }
+          return normalizeTaskRecord(recovered)
+        })
+      : []
   } catch {
     return []
   }
@@ -30,6 +45,7 @@ export const appState = reactive({
   cachedChats: [],
   chatCacheMeta: null,
   chatCacheLoading: false,
+  recovery: recoveryInfo,
   /**
    * 当前选中的聊天对象，用于在列表页快速跳转到导出/转发页面时传递参数。
    * 当用户在对话列表中点击“导出”或“转发”按钮时，会更新此字段。
@@ -38,6 +54,7 @@ export const appState = reactive({
   selectedExportRecord: null,
   selectedForwardRecord: null,
   selectedUploadRecord: null,
+  selectedDownloadRecord: null,
   /**
    * 是否显示任务日志面板。当为 false 时隐藏日志面板，并在界面底部提供按钮重新展开。
    */
