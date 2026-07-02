@@ -333,7 +333,14 @@ class CommentForwardWorker extends EventEmitter {
       child.on('close', code => {
         this.currentProcess = null
         if (code === 0) resolve({ code, stdout, stderr })
-        else reject(new Error(`命令执行失败，退出码：${code}`))
+        else {
+          const details = [stderr, stdout].map(text => String(text || '').trim()).filter(Boolean).join('\n')
+          const err = new Error(details ? `命令执行失败，退出码：${code}\n${details}` : `命令执行失败，退出码：${code}`)
+          err.exitCode = code
+          err.stdout = stdout
+          err.stderr = stderr
+          reject(err)
+        }
       })
     })
   }
@@ -416,7 +423,12 @@ class CommentForwardWorker extends EventEmitter {
   }
 
   isMsgIdInvalid(error) {
-    const message = String(error && error.message ? error.message : error || "");
+    const message = [
+      error && error.message,
+      error && error.stderr,
+      error && error.stdout,
+      error
+    ].map(item => String(item || "")).join("\n");
     return message.includes("MSG_ID_INVALID");
   }
 

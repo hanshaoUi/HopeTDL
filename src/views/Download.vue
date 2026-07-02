@@ -1,14 +1,18 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { message } from '../ui/naive'
-import { commandText, runTask } from '../utils'
+import { commandText, runTask, runTaskAndWait } from '../utils'
 import CommandPreview from '../components/CommandPreview.vue'
+import ChatSelect from '../components/ChatSelect.vue'
 import { appState } from '../state.js'
 import { getDownloadRecords, saveDownloadRecord } from '../historyStore'
 
 const sourceType = ref('url')
 const urlsText = ref('')
 const filesText = ref('')
+const commentsChat = ref('')
+const commentsIdsText = ref('')
+const commentsWorkDir = ref('')
 const dir = ref('')
 const includeExt = ref('')
 const excludeExt = ref('')
@@ -25,6 +29,36 @@ const recentRecords = ref([])
 
 const urls = computed(() => urlsText.value.split(/\r?\n/).map(item => item.trim()).filter(Boolean))
 const files = computed(() => filesText.value.split(/\r?\n/).map(item => item.trim()).filter(Boolean))
+const commentsIds = computed(() => commentsIdsText.value.split(/\r?\n|,|，/).map(item => item.trim()).filter(Boolean))
+
+function pad(n) {
+  return String(n).padStart(2, '0')
+}
+
+function timestampToken() {
+  const d = new Date()
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+}
+
+function cleanPathPart(value) {
+  return String(value || 'chat').replace(/[\\/:*?"<>|#%{}~&\s]+/g, '_').slice(0, 60) || 'chat'
+}
+
+function joinPath(base, child) {
+  const cleanBase = String(base || '').replace(/[\\/]+$/, '')
+  if (!cleanBase) return child
+  const sep = cleanBase.includes('\\') ? '\\' : '/'
+  return `${cleanBase}${sep}${child}`
+}
+
+function defaultCommentsWorkDir() {
+  const base = commentsWorkDir.value || dir.value || appState.config?.defaultDownloadDir || ''
+  return joinPath(base, `comment-download_${timestampToken()}`)
+}
+
+function commentExportFile(workDir, id) {
+  return joinPath(workDir, `comments_${cleanPathPart(commentsChat.value)}_${cleanPathPart(id)}.json`)
+}
 
 const args = computed(() => {
   const a = ['download']
@@ -43,9 +77,27 @@ const args = computed(() => {
   if (desc.value) a.push('--desc')
   if (resumeMode.value === 'continue') a.push('--continue')
   if (resumeMode.value === 'restart') a.push('--restart')
-  for (const item of urls.value) a.push('-u', item)
-  for (const item of files.value) a.push('-f', item)
+  if (sourceType.value === 'url') {
+    for (const item of urls.value) a.push('-u', item)
+  } else if (sourceType.value === 'file') {
+    for (const item of files.value) a.push('-f', item)
+  } else if (sourceType.value === 'comments') {
+    for (const id of commentsIds.value) a.push('-f', commentExportFile('<workDir>', id))
+  }
   return a
+})
+
+const previewCommand = computed(() => {
+  if (sourceType.value !== 'comments') return commandText(args.value)
+  const ids = commentsIds.value.length ? commentsIds.value : ['<主消息ID>']
+  const lines = [
+    '# 评论区下载会先导出评论区 JSON，再下载其中媒体'
+  ]
+  for (const id of ids) {
+    lines.push(commandText(['chat', 'export', '-c', commentsChat.value || '<源频道/群组>', '--reply', id, '--all', '--with-content', '-o', commentExportFile('<workDir>', id)]))
+  }
+  lines.push(commandText(args.value))
+  return lines.join('\n')
 })
 
 async function pickDir() {
@@ -64,10 +116,18 @@ async function pickFiles() {
   else filesText.value = String(selected)
 }
 
+async function pickCommentsWorkDir() {
+  const selected = await window.tdlApi.openDirectory({ defaultPath: commentsWorkDir.value || dir.value || appState.config?.defaultDownloadDir || await window.tdlApi.getDefaultOutputDir() })
+  if (selected) commentsWorkDir.value = selected
+}
+
 function applyRecord(record) {
   sourceType.value = record.sourceType || 'url'
   urlsText.value = (record.urls || []).join('\n')
   filesText.value = (record.files || []).join('\n')
+  commentsChat.value = record.commentsChat || ''
+  commentsIdsText.value = (record.commentsIds || []).join('\n')
+  commentsWorkDir.value = record.commentsWorkDir || ''
   dir.value = record.dir || ''
   includeExt.value = record.includeExt || ''
   excludeExt.value = record.excludeExt || ''
@@ -95,6 +155,16 @@ async function run() {
     message.error('请至少填写一个导出文件路径')
     return
   }
+  if (sourceType.value === 'comments') {
+    if (!commentsChat.value) {
+      message.error('请填写评论区所属的源频道 / 群组')
+      return
+    }
+    if (!commentsIds.value.length) {
+      message.error('请至少填写一个主消息 ID')
+      return
+    }
+  }
   if (!dir.value && !serve.value) {
     message.error('请先选择下载目录')
     return
@@ -104,6 +174,9 @@ async function run() {
     sourceType: sourceType.value,
     urls: urls.value,
     files: files.value,
+    commentsChat: commentsChat.value,
+    commentsIds: commentsIds.value,
+    commentsWorkDir: commentsWorkDir.value,
     dir: dir.value,
     includeExt: includeExt.value,
     excludeExt: excludeExt.value,
@@ -116,11 +189,29 @@ async function run() {
     takeout: takeout.value,
     desc: desc.value,
     resumeMode: resumeMode.value,
-    command: commandText(args.value),
+    command: previewCommand.value,
     time: new Date().toLocaleString()
   })
   loadHistory()
-  await runTask('download', args.value, '下载媒体')
+  if (sourceType.value !== 'comments') {
+    await runTask('download', args.value, '下载媒体')
+    return
+  }
+
+  const workDir = defaultCommentsWorkDir()
+  const exportedFiles = []
+  for (const id of commentsIds.value) {
+    const output = commentExportFile(workDir, id)
+    await runTaskAndWait('export', ['chat', 'export', '-c', commentsChat.value, '--reply', id, '--all', '--with-content', '-o', output], `导出评论区 ${id}`)
+    exportedFiles.push(output)
+  }
+
+  const downloadArgs = args.value.filter((item, index, source) => {
+    if (source[index - 1] === '-f' || source[index - 1] === '--file') return false
+    return item !== '-f' && item !== '--file'
+  })
+  for (const file of exportedFiles) downloadArgs.push('-f', file)
+  await runTask('download', downloadArgs, '下载评论区媒体')
 }
 
 onMounted(async () => {
@@ -145,6 +236,7 @@ onMounted(async () => {
         <n-radio-group v-model:value="sourceType">
           <n-radio-button value="url">消息链接</n-radio-button>
           <n-radio-button value="file">导出文件</n-radio-button>
+          <n-radio-button value="comments">评论区</n-radio-button>
         </n-radio-group>
       </n-form-item>
 
@@ -152,12 +244,33 @@ onMounted(async () => {
         <n-input v-model:value="urlsText" type="textarea" :rows="5" placeholder="一行一个 https://t.me/... 链接" />
       </n-form-item>
 
-      <n-form-item v-else label="导出文件">
+      <n-form-item v-else-if="sourceType === 'file'" label="导出文件">
         <div style="display:flex; gap:10px; align-items:flex-start; width:100%">
           <n-input v-model:value="filesText" type="textarea" :rows="5" placeholder="一行一个官方客户端导出的文件路径" style="flex:1" />
           <n-button @click="pickFiles">选择文件</n-button>
         </div>
       </n-form-item>
+
+      <template v-else>
+        <n-form-item label="源频道 / 群组">
+          <ChatSelect
+            v-model="commentsChat"
+            placeholder="评论区所属频道 / 群组，例如 @source 或 ID"
+            button-text="更新缓存"
+          />
+        </n-form-item>
+
+        <n-form-item label="主消息 ID">
+          <n-input v-model:value="commentsIdsText" type="textarea" :rows="4" placeholder="一行一个主消息 ID，或用逗号分隔，例如 2313,2314" />
+        </n-form-item>
+
+        <n-form-item label="评论区缓存">
+          <div style="display:flex; gap:10px; align-items:center; width:100%">
+            <n-input v-model:value="commentsWorkDir" placeholder="可空，默认在下载目录下生成 comment-download_时间戳" style="flex:1" />
+            <n-button @click="pickCommentsWorkDir">选择目录</n-button>
+          </div>
+        </n-form-item>
+      </template>
 
       <n-form-item label="下载目录">
         <div style="display:flex; gap:10px; align-items:center; width:100%">
@@ -203,7 +316,7 @@ onMounted(async () => {
       </div>
     </n-form>
 
-    <CommandPreview :command="commandText(args)" />
+    <CommandPreview :command="previewCommand" />
     <div style="height:16px"></div>
     <n-button type="primary" @click="run">开始下载</n-button>
   </div>
@@ -224,7 +337,7 @@ onMounted(async () => {
         <tbody>
           <tr v-for="row in recentRecords" :key="row.id">
             <td>{{ row.time }}</td>
-            <td>{{ row.sourceType === 'file' ? '导出文件' : '消息链接' }}</td>
+            <td>{{ row.sourceType === 'comments' ? '评论区' : row.sourceType === 'file' ? '导出文件' : '消息链接' }}</td>
             <td class="truncate-cell">{{ row.dir }}</td>
             <td class="truncate-cell">{{ row.command }}</td>
             <td>
