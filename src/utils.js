@@ -218,7 +218,7 @@ function forwardArgsForIncrementalFile(args = [], filePath) {
   return replaceArgValue(args, ['--from'], filePath)
 }
 
-function runTaskAndWait(type, args, title, extra = {}) {
+export function runTaskAndWait(type, args, title, extra = {}) {
   return new Promise(async (resolve, reject) => {
     let offDone = null
     try {
