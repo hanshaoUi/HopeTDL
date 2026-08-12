@@ -1,4 +1,4 @@
-import { reactive } from 'vue'
+import { reactive, shallowReactive } from 'vue'
 import { normalizeTaskRecord, recoverInterruptedTask } from './taskState'
 
 const TASKS_KEY = 'hopetdl.tasks.v1'
@@ -38,12 +38,21 @@ function readStoredSchedules() {
 
 export const appState = reactive({
   config: {},
+  // 只存已换行的历史行，环形缓冲，写入统一走 logStore.appendLog。
   logs: [],
+  // 未换行的活动行（进度条），每个 taskId+level 只占一条，随时被覆盖。
+  liveLines: shallowReactive({}),
+  // 增量维护，避免每来一行就全量 filter 一遍日志数组。
+  logErrorCount: 0,
+  logVersion: 0,
   tasks: readStoredTasks(),
   schedules: readStoredSchedules(),
   schedulerPaused: false,
+  // 对话列表可能上千条且每条带 topics 数组，内容只读、整体替换。
+  // 赋值时统一用 markRaw（见 chatCache.applyCacheInfo），避免给每一行建深层 Proxy。
   cachedChats: [],
   chatCacheMeta: null,
+  chatCacheVersion: 0,
   chatCacheLoading: false,
   recovery: recoveryInfo,
   /**

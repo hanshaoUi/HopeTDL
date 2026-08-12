@@ -1,5 +1,6 @@
 import { appState } from './state'
 import { message } from './ui/naive'
+import { appendLog } from './logStore'
 import {
   TASK_STATE,
   isTaskFinished,
@@ -33,21 +34,50 @@ export function commandText(args) {
   return [c.tdlPath || 'tdl', ...globalArgs(), ...args].map(quoteArg).join(' ')
 }
 
-export function persistTasks() {
-  try {
-    const snapshot = appState.tasks.slice(0, 100).map(item => normalizeTaskRecord(item))
-    localStorage.setItem(TASKS_KEY, JSON.stringify(snapshot))
-  } catch {
-    // Ignore storage failures; task state still works in memory.
+// 任务状态每次变更都同步序列化 100 条记录写 localStorage，是主线程上的同步开销。
+// 合并到下一个宏任务再写一次，页面卸载前强制冲刷。
+function createDebouncedWriter(key, snapshot) {
+  let timer = null
+  const write = () => {
+    timer = null
+    try {
+      localStorage.setItem(key, JSON.stringify(snapshot()))
+    } catch {
+      // Ignore storage failures; state still works in memory.
+    }
   }
+  const schedule = () => {
+    if (timer !== null) return
+    timer = setTimeout(write, 250)
+  }
+  schedule.flush = () => {
+    if (timer === null) return
+    clearTimeout(timer)
+    write()
+  }
+  return schedule
+}
+
+const writeTasks = createDebouncedWriter(TASKS_KEY, () =>
+  appState.tasks.slice(0, 100).map(item => normalizeTaskRecord(item)))
+const writeSchedules = createDebouncedWriter(SCHEDULES_KEY, () =>
+  appState.schedules.slice(0, 100))
+
+export function persistTasks() {
+  writeTasks()
 }
 
 export function persistSchedules() {
-  try {
-    localStorage.setItem(SCHEDULES_KEY, JSON.stringify(appState.schedules.slice(0, 100)))
-  } catch {
-    // Ignore storage failures; schedule state still works in memory.
-  }
+  writeSchedules()
+}
+
+export function flushPersistedState() {
+  writeTasks.flush()
+  writeSchedules.flush()
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', flushPersistedState)
 }
 
 export function createTask(type, args, title, extra = {}) {
@@ -419,7 +449,7 @@ export function startTaskScheduler() {
         schedule.nextRunAt = nextRunAfter(schedule, now)
       }
       persistSchedules()
-      appState.logs.push({
+      appendLog({
         taskId: 'scheduler',
         level: 'info',
         text: `[定时任务] 检查：${schedule.name || schedule.type}\n`
@@ -430,7 +460,7 @@ export function startTaskScheduler() {
         if (shouldRun) {
           await runScheduledTaskNow(schedule)
         } else {
-          appState.logs.push({
+          appendLog({
             taskId: 'scheduler',
             level: 'info',
             text: `[定时任务] 跳过：${schedule.name || schedule.type}，${schedule.lastStatus || '未满足触发条件'}\n`
@@ -440,7 +470,7 @@ export function startTaskScheduler() {
         schedule.lastStatus = '发起失败'
         scheduleEvent(schedule, 'error', `发起失败：${err?.message || err}`)
         persistSchedules()
-        appState.logs.push({
+        appendLog({
           taskId: 'scheduler',
           level: 'error',
           text: `[定时任务] 发起失败：${err?.message || err}\n`

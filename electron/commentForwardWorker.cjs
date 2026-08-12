@@ -3,6 +3,9 @@ const path = require('path')
 const { spawn } = require('child_process')
 const EventEmitter = require('events')
 
+// 子进程输出只保留尾部这么多字符用于报错，其余丢弃。
+const OUTPUT_TAIL_LIMIT = 32 * 1024
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -76,11 +79,6 @@ function collectMessageIds(node, ids = [], contextKey = '') {
     for (const [key, value] of Object.entries(node)) collectMessageIds(value, ids, key)
   }
   return ids
-}
-
-function countMessages(json) {
-  const ids = collectMessageIds(json)
-  return Array.from(new Set(ids)).length
 }
 
 function extractMessageIds(json) {
@@ -159,58 +157,73 @@ function collectTextCandidates(obj, depth = 0) {
   return result
 }
 
-function filterJsonByKeywords(json, config) {
-  const matcher = createKeywordMatcher(config)
-  if (!matcher) return { json, removed: 0, hitKeywords: [], hasKeywordRules: false }
-
-  let removed = 0
-  const hitKeywords = new Set()
-
-  function filterNode(node, contextKey = '') {
-    if (Array.isArray(node)) {
-      const trustedArray = ['messages', 'message', 'items', 'list', 'data', 'result'].includes(String(contextKey || '').toLowerCase())
-      const next = []
-      for (const item of node) {
-        if (looksLikeMessageObject(item, trustedArray)) {
-          const text = collectTextCandidates(item).join('\n')
-          const hit = matcher(text)
+// 原实现为整棵 JSON 建了一份全新的深拷贝（每个数组、每个对象都新建），
+// 导出大频道时相当于把已经很大的解析结果再翻一倍。这里改成原地过滤：
+// 数组用读写双指针就地压缩，对象直接删键，不产生第二棵树。
+// 同一趟里顺便统计保留下来的消息 ID，省掉外层「写完再读回来数一遍」的第二次解析。
+function filterTreeInPlace(node, contextKey, ctx) {
+  if (Array.isArray(node)) {
+    const trustedArray = ['messages', 'message', 'items', 'list', 'data', 'result'].includes(String(contextKey || '').toLowerCase())
+    let write = 0
+    for (let read = 0; read < node.length; read += 1) {
+      const item = node[read]
+      if (looksLikeMessageObject(item, trustedArray)) {
+        if (ctx.matcher) {
+          const hit = ctx.matcher(collectTextCandidates(item).join('\n'))
           if (hit) {
-            removed += 1
-            hitKeywords.add(hit)
+            ctx.removed += 1
+            ctx.hitKeywords.add(hit)
             continue
           }
         }
-        const filtered = filterNode(item, contextKey)
-        if (filtered !== null && filtered !== undefined) next.push(filtered)
+        const id = asSafeInteger(item.id ?? item.ID ?? item.message_id ?? item.messageID)
+        if (id !== null) ctx.ids.add(id)
       }
-      return next
+      filterTreeInPlace(item, contextKey, ctx)
+      if (item === null || item === undefined) continue
+      node[write] = item
+      write += 1
     }
-
-    if (node && typeof node === 'object') {
-      const next = {}
-      for (const [key, value] of Object.entries(node)) {
-        const filtered = filterNode(value, key)
-        if (filtered !== null && filtered !== undefined) next[key] = filtered
-      }
-      return next
-    }
-
+    node.length = write
     return node
   }
 
-  return { json: filterNode(json), removed, hitKeywords: Array.from(hitKeywords), hasKeywordRules: true }
+  if (node && typeof node === 'object') {
+    for (const key of Object.keys(node)) {
+      const value = node[key]
+      if (value === null || value === undefined) {
+        delete node[key]
+        continue
+      }
+      filterTreeInPlace(value, key, ctx)
+    }
+    return node
+  }
+
+  return node
 }
 
-function writeFilteredJsonIfNeeded(sourceFile, targetFile, config) {
+/**
+ * 读一次、走一遍：完成关键词过滤并给出过滤后的消息条数。
+ * 没有关键词规则时不写新文件，只统计条数。
+ */
+function filterAndCount(sourceFile, targetFile, config) {
   const matcher = createKeywordMatcher(config)
-  if (!matcher) return { file: sourceFile, removed: 0, hitKeywords: [], hasKeywordRules: false }
-
+  const hasKeywordRules = Boolean(matcher)
   const json = readJsonSafe(sourceFile)
-  if (!json) return { file: sourceFile, removed: 0, hitKeywords: [], hasKeywordRules: true }
+  if (!json) return { file: sourceFile, removed: 0, hitKeywords: [], hasKeywordRules, count: 0 }
 
-  const result = filterJsonByKeywords(json, config)
-  writeJsonSafe(targetFile, result.json)
-  return { file: targetFile, removed: result.removed, hitKeywords: result.hitKeywords, hasKeywordRules: true }
+  const ctx = { matcher, removed: 0, hitKeywords: new Set(), ids: new Set() }
+  filterTreeInPlace(json, '', ctx)
+
+  if (hasKeywordRules) writeJsonSafe(targetFile, json)
+  return {
+    file: hasKeywordRules ? targetFile : sourceFile,
+    removed: ctx.removed,
+    hitKeywords: Array.from(ctx.hitKeywords),
+    hasKeywordRules,
+    count: ctx.ids.size
+  }
 }
 
 function normalizeConfig(input) {
@@ -316,14 +329,18 @@ class CommentForwardWorker extends EventEmitter {
       let stdout = ''
       let stderr = ''
 
+      // 这两份字符串只用于失败时拼错误信息。
+      // 原来是无上限累积：导出大频道时 tdl 的进度输出能堆到几百 MB。
+      const keepTail = text => text.length > OUTPUT_TAIL_LIMIT ? text.slice(-OUTPUT_TAIL_LIMIT) : text
+
       child.stdout.on('data', data => {
         const text = data.toString()
-        stdout += text
+        stdout = keepTail(stdout + text)
         this.log(text, 'stdout')
       })
       child.stderr.on('data', data => {
         const text = data.toString()
-        stderr += text
+        stderr = keepTail(stderr + text)
         this.log(text, 'stderr')
       })
       child.on('error', err => {
@@ -565,11 +582,11 @@ class CommentForwardWorker extends EventEmitter {
           await this.exportSinglePost(id, postFile)
 
           const filteredPostFile = path.join(this.paths.filtered, `post_${id}.filtered.json`)
-          const postFilter = writeFilteredJsonIfNeeded(postFile, filteredPostFile, this.config)
+          const postFilter = filterAndCount(postFile, filteredPostFile, this.config)
           if (postFilter.removed > 0) {
             this.log(`主消息 ${id} 命中关键词，已屏蔽 ${postFilter.removed} 条；关键词：${postFilter.hitKeywords.join(' / ')}`, 'warning')
           }
-          const postCount = countMessages(readJsonSafe(postFilter.file))
+          const postCount = postFilter.count
           this.log(`主消息 ${id} 过滤后数量：${postCount}`, 'info')
           const postBlocked = postFilter.removed > 0 && postCount === 0
 
@@ -586,11 +603,11 @@ class CommentForwardWorker extends EventEmitter {
               this.progress({ current: index, total: ids.length, id, stage: 'export-comments' })
               await this.exportComments(id, commentsFile)
               const filteredCommentsFile = path.join(this.paths.filtered, `comments_${id}.filtered.json`)
-              commentsFilter = writeFilteredJsonIfNeeded(commentsFile, filteredCommentsFile, this.config)
+              commentsFilter = filterAndCount(commentsFile, filteredCommentsFile, this.config)
               if (commentsFilter.removed > 0) {
                 this.log(`主消息 ${id} 的评论区命中关键词，已屏蔽 ${commentsFilter.removed} 条；关键词：${commentsFilter.hitKeywords.join(' / ')}`, 'warning')
               }
-              commentCount = countMessages(readJsonSafe(commentsFilter.file))
+              commentCount = commentsFilter.count
               this.log(`主消息 ${id} 评论区过滤后数量：${commentCount}`, 'info')
 
               if (this.config.skipPostWhenNoComments && commentCount === 0) {
@@ -644,4 +661,4 @@ class CommentForwardWorker extends EventEmitter {
   }
 }
 
-module.exports = { CommentForwardWorker }
+module.exports = { CommentForwardWorker, filterAndCount, extractMessageIds }

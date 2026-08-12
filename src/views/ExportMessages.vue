@@ -6,7 +6,7 @@ import CommandPreview from '../components/CommandPreview.vue'
 import ChatSelect from '../components/ChatSelect.vue'
 import { appState } from '../state.js'
 import { chatId as getChatId, chatTitle as getChatTitle, findChatByValue } from '../chatCache'
-import { touchRecentChat } from '../historyStore'
+import { readJson, touchRecentChat, writeJson } from '../historyStore'
 
 const chat = ref('')
 const type = ref('id')
@@ -133,17 +133,15 @@ function handleSourceSelect(row) {
 }
 
 
+// 走 historyStore 的统一读写：那里有解析缓存，
+// 直接操作 localStorage 会让 Chats.vue 等页面读到过期的导出记忆。
 function readAllMemory() {
-  try {
-    return JSON.parse(localStorage.getItem(HISTORY_KEY) || '{}')
-  } catch (err) {
-    return {}
-  }
+  return readJson(HISTORY_KEY, {})
 }
 
 function writeAllMemory(memory) {
   try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(memory))
+    writeJson(HISTORY_KEY, memory)
   } catch (err) {
     message.error('保存导出记录失败')
   }

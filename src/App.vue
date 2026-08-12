@@ -2,6 +2,8 @@
 import { defineAsyncComponent, onMounted, onUnmounted, watch } from 'vue'
 import { appState } from './state'
 import { naiveTheme, themeOverrides } from './ui/naive'
+import { appendLog, finalizeLogs } from './logStore'
+import { applyCacheInfo } from './chatCache'
 import { persistTasks, startTaskScheduler, updateTaskStatus } from './utils'
 import TaskLog from './components/TaskLog.vue'
 import { isTaskFailed, isTaskRunning, TASK_STATE } from './taskState'
@@ -23,6 +25,8 @@ const nav = [
   ['dashboard', '仪表盘'], ['login', '登录账号'], ['chats', '对话列表'], ['export', '导出消息'], ['forward', '转发消息'], ['commentForward', '评论区转发'], ['download', '下载媒体'], ['upload', '上传文件'], ['history', '历史记录'], ['taskCenter', '任务中心'], ['settings', '设置']
 ]
 let stopScheduler = null
+let offLog = null
+let offDone = null
 let offNavigate = null
 let offSchedulerPaused = null
 let offTasksStopped = null
@@ -49,7 +53,7 @@ function syncAppStatus() {
 onMounted(async () => {
   const tdlApi = window.tdlApi
   if (appState.recovery?.interruptedCount) {
-    appState.logs.push({
+    appendLog({
       taskId: 'app-recovery',
       level: 'warning',
       text: `[恢复] 检测到 ${appState.recovery.interruptedCount} 个上次未完成的任务，已标记为“已中断”。请在任务中心决定是否重试。\n`
@@ -72,12 +76,14 @@ onMounted(async () => {
     // 忽略设置错误
   }
   if (!tdlApi) {
-    appState.logs.push({ taskId: 'app', level: 'warning', text: '[开发预览] 当前页面未运行在 Electron 中，tdl 操作不可用。\n' })
+    appendLog({ taskId: 'app', level: 'warning', text: '[开发预览] 当前页面未运行在 Electron 中，tdl 操作不可用。\n' })
     return
   }
 
-  tdlApi.onLog((data) => appState.logs.push(data))
-  tdlApi.onDone((data) => {
+  offLog = tdlApi.onLog((data) => appendLog(data))
+  offDone = tdlApi.onDone((data) => {
+    // 把该任务残留的未换行输出落成历史行，避免进度条最后一帧永远挂着。
+    finalizeLogs(data.taskId)
     const existing = appState.tasks.find(t => t.id === data.taskId)
     if (existing?.state === TASK_STATE.STOPPED) {
       updateTaskStatus(data.taskId, TASK_STATE.STOPPED, { exitCode: data.code })
@@ -107,11 +113,9 @@ onMounted(async () => {
   // 第一次没有缓存会自动刷新一次；缓存未过期时只读取本地缓存，不再重复请求 tdl。
   appState.chatCacheLoading = true
   try {
-    const info = await tdlApi.ensureChatCache()
-    appState.cachedChats = Array.isArray(info?.chats) ? info.chats : []
-    appState.chatCacheMeta = info || null
+    applyCacheInfo(await tdlApi.ensureChatCache())
   } catch (err) {
-    appState.logs.push({ taskId: 'chat-cache', level: 'error', text: `[对话缓存] 初始化失败：${err?.message || err}\n` })
+    appendLog({ taskId: 'chat-cache', level: 'error', text: `[对话缓存] 初始化失败：${err?.message || err}\n` })
   } finally {
     appState.chatCacheLoading = false
   }
@@ -119,6 +123,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (stopScheduler) stopScheduler()
+  if (offLog) offLog()
+  if (offDone) offDone()
   if (offNavigate) offNavigate()
   if (offSchedulerPaused) offSchedulerPaused()
   if (offTasksStopped) offTasksStopped()
@@ -143,14 +149,18 @@ watch(() => appState.theme, (val) => {
   }
 })
 
+// 原来这里每次任务变更都要把全部任务和计划拼成字符串再比较。
+// 托盘/角标只关心几个计数，直接盯计数即可，省掉每次变更的全量遍历和字符串分配。
 watch(
-  () => ({
-    tasks: appState.tasks.map(task => `${task.id}:${task.status}`).join('|'),
-    schedules: appState.schedules.map(schedule => `${schedule.id}:${schedule.enabled}:${schedule.lastCheckedAt || ''}`).join('|'),
-    schedulerPaused: appState.schedulerPaused
-  }),
-  syncAppStatus,
-  { deep: false }
+  () => [
+    appState.tasks.length,
+    appState.tasks.filter(isTaskRunning).length,
+    appState.tasks.filter(isTaskFailed).length,
+    appState.schedules.length,
+    appState.schedules.filter(schedule => schedule.enabled).length,
+    appState.schedulerPaused
+  ].join(','),
+  syncAppStatus
 )
 </script>
 
@@ -168,7 +178,9 @@ watch(
           </aside>
           <main class="main">
             <section class="content">
-              <KeepAlive>
+              <!-- 11 个页面全部常驻会把每个页面的组件树和 watcher 永久留在内存里。
+                   只缓存最近 3 个，其余按需重建。 -->
+              <KeepAlive :max="3">
                 <component :is="views[appState.activeView]" />
               </KeepAlive>
             </section>

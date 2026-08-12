@@ -19,32 +19,72 @@ let appStatus = {
   lastScheduleCheck: ''
 }
 const activeTdlChildren = new Map()
+
+// tdl 的 stdout 是高频小块（进度条每秒几十上百次重绘）。
+// 每块都单独走一次 IPC + 一次渲染端 push，会把主进程和渲染进程一起拖死。
+// 这里按 taskId 聚合，最多每 LOG_FLUSH_MS 发一帧，并且单帧超过 LOG_FLUSH_MAX_BYTES 立即冲刷。
+const LOG_FLUSH_MS = 120
+const LOG_FLUSH_MAX_BYTES = 64 * 1024
+const logBuffers = new Map()
+
+function flushLogBuffer(key) {
+  const entry = logBuffers.get(key)
+  if (!entry) return
+  logBuffers.delete(key)
+  if (entry.timer) clearTimeout(entry.timer)
+  if (!entry.text) return
+  const sender = entry.sender
+  if (!sender || sender.isDestroyed()) return
+  sender.send('tdl:log', { taskId: entry.taskId, level: entry.level, text: entry.text })
+}
+
+function flushAllLogBuffers() {
+  for (const key of Array.from(logBuffers.keys())) flushLogBuffer(key)
+}
+
+function sendLog(sender, { taskId, level, text }) {
+  if (!sender || sender.isDestroyed()) return
+  const content = String(text ?? '')
+  if (!content) return
+  const key = `${sender.id}::${taskId}::${level}`
+  const existing = logBuffers.get(key)
+  if (existing) {
+    existing.text += content
+    if (existing.text.length >= LOG_FLUSH_MAX_BYTES) flushLogBuffer(key)
+    return
+  }
+  const entry = { sender, taskId, level, text: content, timer: null }
+  entry.timer = setTimeout(() => flushLogBuffer(key), LOG_FLUSH_MS)
+  if (entry.timer.unref) entry.timer.unref()
+  logBuffers.set(key, entry)
+  if (entry.text.length >= LOG_FLUSH_MAX_BYTES) flushLogBuffer(key)
+}
+
 const userDataDir = () => app.getPath('userData')
 const configPath = () => path.join(userDataDir(), 'config.json')
 const chatCachePath = () => path.join(userDataDir(), 'chats-cache.json')
 
 function projectRoot() {
   // In dev mode, __dirname is <project>/electron, so the root is one level up.
-  // In packaged mode, use the executable directory as a predictable writable-adjacent base.
-  return isDev ? path.resolve(__dirname, '..') : path.dirname(app.getPath('exe'))
+  return path.resolve(__dirname, '..')
 }
 
 function defaultOutputDir() {
-  const dir = path.join(projectRoot(), 'output')
+  // 打包后 dirname(exe) 在 macOS 上是 HopeTDL.app/Contents/MacOS，
+  // 往里写 output/ 会破坏签名、被 Gatekeeper 拦，而且升级时整个目录被替换、数据丢失。
+  // 打包版一律写到用户可见的文档目录。
+  const base = isDev ? projectRoot() : path.join(app.getPath('documents'), 'HopeTDL')
+  const dir = path.join(base, 'output')
   fs.mkdirSync(dir, { recursive: true })
   return dir
 }
 
 function appIconPath() {
-  return isDev
-    ? path.join(projectRoot(), 'assets', 'icons', 'icon.png')
-    : path.join(__dirname, '..', 'assets', 'icons', 'icon.png')
+  return path.join(projectRoot(), 'assets', 'icons', 'icon.png')
 }
 
 function trayIconPath() {
-  return isDev
-    ? path.join(projectRoot(), 'assets', 'icons', 'icon-24.png')
-    : path.join(__dirname, '..', 'assets', 'icons', 'icon-24.png')
+  return path.join(projectRoot(), 'assets', 'icons', 'icon-24.png')
 }
 
 function trayIcon() {
@@ -305,7 +345,7 @@ function runTdl(event, payload) {
   const tdlPath = resolveTdlPath(config.tdlPath || 'tdl')
   const args = [...buildGlobalArgs(config), ...(payload.args || [])]
   const taskId = payload.taskId || `task_${Date.now()}`
-  event.sender.send('tdl:log', { taskId, level: 'info', text: `$ ${tdlPath} ${args.map(a => String(a).includes(' ') ? JSON.stringify(a) : a).join(' ')}\n` })
+  sendLog(event.sender, { taskId, level: 'info', text: `$ ${tdlPath} ${args.map(a => String(a).includes(' ') ? JSON.stringify(a) : a).join(' ')}\n` })
 
   // Ensure the parent directory of export/download output exists when -o is used.
   const outputIndex = args.findIndex(item => String(item) === '-o' || String(item) === '--output')
@@ -313,7 +353,7 @@ function runTdl(event, payload) {
     try {
       fs.mkdirSync(path.dirname(String(args[outputIndex + 1])), { recursive: true })
     } catch (err) {
-      event.sender.send('tdl:log', { taskId, level: 'warning', text: `[输出目录创建失败] ${err.message}\n` })
+      sendLog(event.sender, { taskId, level: 'warning', text: `[输出目录创建失败] ${err.message}\n` })
     }
   }
 
@@ -321,20 +361,23 @@ function runTdl(event, payload) {
   activeTdlChildren.set(taskId, child)
 
   child.stdout.on('data', data => {
-    event.sender.send('tdl:log', { taskId, level: 'stdout', text: data.toString() })
+    sendLog(event.sender, { taskId, level: 'stdout', text: data.toString() })
   })
   child.stderr.on('data', data => {
-    event.sender.send('tdl:log', { taskId, level: 'stderr', text: data.toString() })
+    sendLog(event.sender, { taskId, level: 'stderr', text: data.toString() })
   })
   child.on('error', err => {
     activeTdlChildren.delete(taskId)
-    event.sender.send('tdl:log', { taskId, level: 'error', text: `\n[启动失败] ${err.message}\n[建议] 打包后的 macOS App 可能找不到终端里的 tdl。请在设置里把 tdl 路径改成 /opt/homebrew/bin/tdl 或 /usr/local/bin/tdl；本版也会自动尝试这些路径。\n` })
-    event.sender.send('tdl:done', { taskId, code: -1 })
+    sendLog(event.sender, { taskId, level: 'error', text: `\n[启动失败] ${err.message}\n[建议] 打包后的 macOS App 可能找不到终端里的 tdl。请在设置里把 tdl 路径改成 /opt/homebrew/bin/tdl 或 /usr/local/bin/tdl；本版也会自动尝试这些路径。\n` })
+    flushAllLogBuffers()
+    if (!event.sender.isDestroyed()) event.sender.send('tdl:done', { taskId, code: -1 })
   })
   child.on('close', code => {
     activeTdlChildren.delete(taskId)
-    event.sender.send('tdl:log', { taskId, level: code === 0 ? 'info' : 'error', text: `\n[任务结束] exit code: ${code}\n` })
-    event.sender.send('tdl:done', { taskId, code })
+    sendLog(event.sender, { taskId, level: code === 0 ? 'info' : 'error', text: `\n[任务结束] exit code: ${code}\n` })
+    // 任务结束时立即冲刷，保证 done 之前日志已经到齐。
+    flushAllLogBuffers()
+    if (!event.sender.isDestroyed()) event.sender.send('tdl:done', { taskId, code })
   })
   return { taskId, pid: child.pid, args }
 }
@@ -347,9 +390,21 @@ function stopTdlTask(taskId) {
 }
 
 
+// 对话缓存文件可能有几 MB。chats:cache:get 每个页面都会调，
+// 每次都整份 readFileSync + JSON.parse 会反复制造大对象喂给 GC。
+// 按 mtime 记忆解析结果，文件没变就直接复用。
+let chatStoreMemo = { mtimeMs: -1, size: -1, store: null }
+
 function readChatCacheStore() {
+  const file = chatCachePath()
   try {
-    return JSON.parse(fs.readFileSync(chatCachePath(), 'utf8'))
+    const stat = fs.statSync(file)
+    if (chatStoreMemo.store && chatStoreMemo.mtimeMs === stat.mtimeMs && chatStoreMemo.size === stat.size) {
+      return chatStoreMemo.store
+    }
+    const store = JSON.parse(fs.readFileSync(file, 'utf8'))
+    chatStoreMemo = { mtimeMs: stat.mtimeMs, size: stat.size, store }
+    return store
   } catch {
     return { version: 1, caches: {} }
   }
@@ -357,7 +412,14 @@ function readChatCacheStore() {
 
 function writeChatCacheStore(store) {
   fs.mkdirSync(userDataDir(), { recursive: true })
-  fs.writeFileSync(chatCachePath(), JSON.stringify(store, null, 2), 'utf8')
+  const file = chatCachePath()
+  fs.writeFileSync(file, JSON.stringify(store), 'utf8')
+  try {
+    const stat = fs.statSync(file)
+    chatStoreMemo = { mtimeMs: stat.mtimeMs, size: stat.size, store }
+  } catch {
+    chatStoreMemo = { mtimeMs: -1, size: -1, store: null }
+  }
 }
 
 function chatCacheTtlMs(config = readConfig()) {
@@ -416,7 +478,7 @@ function fetchChatsFromTdl(event, { filter = '', cache = false, reason = 'refres
   if (filter) args.push('--filter', filter)
 
   if (event?.sender) {
-    event.sender.send('tdl:log', {
+    sendLog(event.sender, {
       taskId: 'chat-cache',
       level: 'info',
       text: `$ ${tdlPath} ${args.map(a => String(a).includes(' ') ? JSON.stringify(a) : a).join(' ')}\n`
@@ -439,11 +501,12 @@ function fetchChatsFromTdl(event, { filter = '', cache = false, reason = 'refres
         const chats = parseChatListOutput(stdout)
         const result = cache ? saveChatCache(config, chats) : { chats, count: chats.length }
         if (event?.sender) {
-          event.sender.send('tdl:log', {
+          sendLog(event.sender, {
             taskId: 'chat-cache',
             level: 'info',
             text: `[对话列表] ${reason} 完成，共 ${chats.length} 条\n`
           })
+          flushAllLogBuffers()
         }
         resolve(result)
       } catch (err) {
@@ -628,7 +691,7 @@ function startCommentForward(event, payload = {}) {
   const sender = event.sender
 
   worker.on('log', data => {
-    if (!sender.isDestroyed()) sender.send('tdl:log', data)
+    sendLog(sender, data)
   })
 
   worker.on('progress', data => {
@@ -638,6 +701,7 @@ function startCommentForward(event, payload = {}) {
   worker.on('status', data => {
     if (!sender.isDestroyed()) sender.send('comment-forward:status', data)
     if (['done', 'error', 'stopped'].includes(data.status)) {
+      flushAllLogBuffers()
       if (!sender.isDestroyed()) sender.send('tdl:done', { taskId, code: data.status === 'done' ? 0 : 1 })
       currentCommentForwardWorker = null
     }

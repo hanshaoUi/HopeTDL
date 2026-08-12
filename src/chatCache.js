@@ -1,27 +1,39 @@
+import { markRaw } from 'vue'
 import { appState } from './state'
 
-function applyCacheInfo(info) {
+export function applyCacheInfo(info) {
   const chats = Array.isArray(info?.chats) ? info.chats : []
-  appState.cachedChats = chats
-  appState.chatCacheMeta = info || null
+  // markRaw：对话行是只读数据、整体替换，不需要每行一个深层 Proxy。
+  appState.cachedChats = markRaw(chats)
+  appState.chatCacheMeta = info ? markRaw(info) : null
+  appState.chatCacheVersion += 1
   return chats
 }
 
+// 同一时刻只允许一次在途请求，页面切换/下拉聚焦不会重复往主进程要整份列表。
+let inflight = null
+
 export async function loadChatCache({ ensure = false, refresh = false } = {}) {
+  if (inflight && !refresh) return inflight
   appState.chatCacheLoading = true
-  try {
-    let info
-    if (refresh) {
-      info = await window.tdlApi.refreshChatCache()
-    } else if (ensure) {
-      info = await window.tdlApi.ensureChatCache()
-    } else {
-      info = await window.tdlApi.getChatCache()
+  const request = (async () => {
+    try {
+      let info
+      if (refresh) {
+        info = await window.tdlApi.refreshChatCache()
+      } else if (ensure) {
+        info = await window.tdlApi.ensureChatCache()
+      } else {
+        info = await window.tdlApi.getChatCache()
+      }
+      return applyCacheInfo(info)
+    } finally {
+      appState.chatCacheLoading = false
+      if (inflight === request) inflight = null
     }
-    return applyCacheInfo(info)
-  } finally {
-    appState.chatCacheLoading = false
-  }
+  })()
+  inflight = request
+  return request
 }
 
 export function chatId(row) {
