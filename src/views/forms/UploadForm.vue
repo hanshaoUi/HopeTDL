@@ -1,12 +1,12 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { commandText, runTask } from '../utils'
-import CommandPreview from '../components/CommandPreview.vue'
-import ChatSelect from '../components/ChatSelect.vue'
-import { appState } from '../state.js'
-import { message } from '../ui/naive'
-import { findChatByValue } from '../chatCache'
-import { saveUploadRecord, touchRecentChat } from '../historyStore'
+import { commandText, runTask } from '../../utils'
+import CommandPreview from '../../components/CommandPreview.vue'
+import ChatSelect from '../../components/ChatSelect.vue'
+import { appState } from '../../state.js'
+import { message } from '../../ui/naive'
+import { findChatByValue } from '../../chatCache'
+import { saveUploadRecord, touchRecentChat } from '../../historyStore'
 const path = ref('')
 const chat = ref('')
 const topic = ref('')
@@ -100,8 +100,6 @@ function run() {
 }
 </script>
 <template>
-  <h1 class="page-title">上传文件</h1>
-  <p class="page-desc">上传单个文件或整个文件夹到指定聊天，可指定话题和 caption。</p>
   <div class="card">
     <n-form label-width="120px">
       <n-form-item label="上传路径">
@@ -120,7 +118,7 @@ function run() {
             @select="handleTargetSelect"
           />
         </n-form-item>
-        <n-form-item label="话题 ID">
+        <n-form-item label="话题">
           <n-select
             v-if="targetTopics.length"
             v-model:value="topic"

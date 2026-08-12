@@ -1,11 +1,11 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { message } from '../ui/naive'
-import { commandText, runTask, runTaskAndWait } from '../utils'
-import CommandPreview from '../components/CommandPreview.vue'
-import ChatSelect from '../components/ChatSelect.vue'
-import { appState } from '../state.js'
-import { getDownloadRecords, saveDownloadRecord } from '../historyStore'
+import { message } from '../../ui/naive'
+import { commandText, runTask, runTaskAndWait } from '../../utils'
+import CommandPreview from '../../components/CommandPreview.vue'
+import ChatSelect from '../../components/ChatSelect.vue'
+import { appState } from '../../state.js'
+import { getDownloadRecords, saveDownloadRecord } from '../../historyStore'
 
 const sourceType = ref('url')
 const urlsText = ref('')
@@ -227,8 +227,6 @@ onMounted(async () => {
 </script>
 
 <template>
-  <h1 class="page-title">下载媒体</h1>
-  <p class="page-desc">独立执行 `tdl download`，适合从消息链接或导出文件批量下载受保护媒体。</p>
 
   <div class="card">
     <n-form label-width="120px">
@@ -280,10 +278,10 @@ onMounted(async () => {
       </n-form-item>
 
       <div class="grid-2">
-        <n-form-item label="包含后缀">
+        <n-form-item label="只下载这些后缀">
           <n-input v-model:value="includeExt" placeholder="例如 mp4,mp3" />
         </n-form-item>
-        <n-form-item label="排除后缀">
+        <n-form-item label="跳过这些后缀">
           <n-input v-model:value="excludeExt" placeholder="例如 jpg,png" />
         </n-form-item>
       </div>

@@ -1,35 +1,53 @@
 <script setup>
-import { defineAsyncComponent, onMounted, onUnmounted, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onUnmounted, watch } from 'vue'
 import { appState } from './state'
 import { naiveTheme, themeOverrides } from './ui/naive'
 import { appendLog, finalizeLogs } from './logStore'
 import { applyCacheInfo } from './chatCache'
 import { persistTasks, startTaskScheduler, updateTaskStatus } from './utils'
-import TaskLog from './components/TaskLog.vue'
+import LogDrawer from './components/LogDrawer.vue'
 import { isTaskFailed, isTaskRunning, TASK_STATE } from './taskState'
 
-const Dashboard = defineAsyncComponent(() => import('./views/Dashboard.vue'))
-const Login = defineAsyncComponent(() => import('./views/Login.vue'))
+const Overview = defineAsyncComponent(() => import('./views/Overview.vue'))
 const Chats = defineAsyncComponent(() => import('./views/Chats.vue'))
-const ExportMessages = defineAsyncComponent(() => import('./views/ExportMessages.vue'))
-const Forward = defineAsyncComponent(() => import('./views/Forward.vue'))
-const CommentForward = defineAsyncComponent(() => import('./views/CommentForward.vue'))
-const Download = defineAsyncComponent(() => import('./views/Download.vue'))
-const Upload = defineAsyncComponent(() => import('./views/Upload.vue'))
-const History = defineAsyncComponent(() => import('./views/History.vue'))
-const TaskCenter = defineAsyncComponent(() => import('./views/TaskCenter.vue'))
+const NewTask = defineAsyncComponent(() => import('./views/NewTask.vue'))
+const Tasks = defineAsyncComponent(() => import('./views/Tasks.vue'))
 const Settings = defineAsyncComponent(() => import('./views/Settings.vue'))
 
-const views = { dashboard: Dashboard, login: Login, chats: Chats, export: ExportMessages, forward: Forward, commentForward: CommentForward, download: Download, upload: Upload, history: History, taskCenter: TaskCenter, settings: Settings }
+const views = { overview: Overview, chats: Chats, newTask: NewTask, tasks: Tasks, settings: Settings }
 const nav = [
-  ['dashboard', '仪表盘'], ['login', '登录账号'], ['chats', '对话列表'], ['export', '导出消息'], ['forward', '转发消息'], ['commentForward', '评论区转发'], ['download', '下载媒体'], ['upload', '上传文件'], ['history', '历史记录'], ['taskCenter', '任务中心'], ['settings', '设置']
+  ['overview', '概览', '◎'],
+  ['chats', '对话', '☰'],
+  ['newTask', '新建任务', '＋'],
+  ['tasks', '任务', '≡'],
+  ['settings', '设置', '⚙']
 ]
+
+// 旧的视图名散落在托盘菜单、历史记录跳转和用户习惯里，这里统一映射到新导航。
+const legacyViews = {
+  dashboard: 'overview',
+  login: 'overview',
+  export: 'newTask',
+  forward: 'newTask',
+  commentForward: 'newTask',
+  download: 'newTask',
+  upload: 'newTask',
+  history: 'tasks',
+  taskCenter: 'tasks'
+}
+
+function resolveView(name) {
+  if (views[name]) return name
+  return legacyViews[name] || 'overview'
+}
 let stopScheduler = null
 let offLog = null
 let offDone = null
 let offNavigate = null
 let offSchedulerPaused = null
 let offTasksStopped = null
+
+const runningTaskCount = computed(() => appState.tasks.filter(isTaskRunning).length)
 
 function latestScheduleCheck() {
   const checks = appState.schedules
@@ -95,7 +113,7 @@ onMounted(async () => {
     })
   })
   offNavigate = tdlApi.onNavigate?.((view) => {
-    if (views[view]) appState.activeView = view
+    appState.activeView = resolveView(view)
   })
   offSchedulerPaused = tdlApi.onSchedulerPaused?.((paused) => {
     appState.schedulerPaused = !!paused
@@ -170,27 +188,33 @@ watch(
       <n-dialog-provider>
         <div class="app-shell">
           <aside class="sidebar">
-            <div class="brand">HopeTDL</div>
-            <div class="brand-sub">tdl 图形化操作原型</div>
-            <div v-for="item in nav" :key="item[0]" class="nav-item" :class="{ active: appState.activeView === item[0] }" @click="appState.activeView = item[0]">
-              {{ item[1] }}
+            <div class="brand">
+              <span class="brand-mark">T</span>
+              <span class="brand-text">HopeTDL</span>
             </div>
+            <nav class="nav">
+              <button
+                v-for="item in nav"
+                :key="item[0]"
+                type="button"
+                class="nav-item"
+                :class="{ active: appState.activeView === item[0] }"
+                @click="appState.activeView = item[0]"
+              >
+                <span class="nav-icon">{{ item[2] }}</span>
+                <span class="nav-label">{{ item[1] }}</span>
+                <span v-if="item[0] === 'tasks' && runningTaskCount" class="nav-badge">{{ runningTaskCount }}</span>
+              </button>
+            </nav>
           </aside>
           <main class="main">
             <section class="content">
-              <!-- 11 个页面全部常驻会把每个页面的组件树和 watcher 永久留在内存里。
-                   只缓存最近 3 个，其余按需重建。 -->
+              <!-- 页面常驻会把组件树和 watcher 永久留在内存里，只缓存最近 3 个。 -->
               <KeepAlive :max="3">
                 <component :is="views[appState.activeView]" />
               </KeepAlive>
             </section>
-            <n-button
-              v-if="!appState.showLog"
-              size="small"
-              class="show-log-button"
-              @click="appState.showLog = true"
-            >显示日志</n-button>
-            <TaskLog v-show="appState.showLog" />
+            <LogDrawer />
           </main>
         </div>
       </n-dialog-provider>

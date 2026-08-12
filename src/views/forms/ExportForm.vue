@@ -1,12 +1,12 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
-import { message } from '../ui/naive'
-import { commandText, runTask } from '../utils'
-import CommandPreview from '../components/CommandPreview.vue'
-import ChatSelect from '../components/ChatSelect.vue'
-import { appState } from '../state.js'
-import { chatId as getChatId, chatTitle as getChatTitle, findChatByValue } from '../chatCache'
-import { readJson, touchRecentChat, writeJson } from '../historyStore'
+import { message } from '../../ui/naive'
+import { commandText, runTask } from '../../utils'
+import CommandPreview from '../../components/CommandPreview.vue'
+import ChatSelect from '../../components/ChatSelect.vue'
+import { appState } from '../../state.js'
+import { chatId as getChatId, chatTitle as getChatTitle, findChatByValue } from '../../chatCache'
+import { readJson, touchRecentChat, writeJson } from '../../historyStore'
 
 const chat = ref('')
 const type = ref('id')
@@ -377,11 +377,9 @@ async function run() {
 }
 </script>
 <template>
-  <h1 class="page-title">导出消息</h1>
-  <p class="page-desc">支持按消息 ID、最近 N 条等方式导出。会自动记住上一次的 -c 和 -i，并按命名空间与聊天 ID 分开保存。</p>
   <div class="card">
     <n-form label-width="120px">
-      <n-form-item label="源聊天 -c">
+      <n-form-item label="源对话">
         <div style="display:flex; gap:10px; align-items:center; width:100%">
           <ChatSelect
             v-model="chat"
@@ -393,10 +391,10 @@ async function run() {
         </div>
       </n-form-item>
       <div class="grid-2">
-        <n-form-item label="导出类型">
+        <n-form-item label="导出方式">
           <n-select v-model:value="type" :options="typeOptions" />
         </n-form-item>
-        <n-form-item label="输入值 -i">
+        <n-form-item label="消息范围">
           <div style="display:flex; gap:10px; align-items:center; width:100%">
             <n-input v-model:value="input" placeholder="例如 1213,1500 或 100" style="flex:1" />
             <n-button @click="useChatLastInput">读取该聊天</n-button>
@@ -427,7 +425,7 @@ async function run() {
         style="margin-bottom:16px"
         :title="`当前聊天上次导出：-i ${chatLastRecord.input || '未填写'}，时间：${chatLastRecord.time || '-'}`"
       />
-      <n-form-item label="选项"><n-checkbox v-model:checked="all">包含普通文字 --all</n-checkbox><n-checkbox v-model:checked="raw">Raw 原始结构 --raw</n-checkbox></n-form-item>
+      <n-form-item label="选项"><n-checkbox v-model:checked="all">包含消息正文</n-checkbox><n-checkbox v-model:checked="raw">保留原始结构</n-checkbox></n-form-item>
       <n-form-item label="输出文件">
         <div style="display:flex; gap:10px; align-items:center; width:100%">
           <n-input v-model:value="output" placeholder="messages.json 绝对路径" style="flex:1" />

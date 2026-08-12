@@ -69,7 +69,7 @@ async function checkEnvironment() {
       <div class="section-title">基础设置</div>
       <div class="grid-2">
         <n-form-item label="tdl 路径"><n-input v-model:value="form.tdlPath" placeholder="tdl" /></n-form-item>
-        <n-form-item label="命名空间 ns"><n-input v-model:value="form.ns" placeholder="hope" /></n-form-item>
+        <n-form-item label="命名空间"><n-input v-model:value="form.ns" placeholder="hope" /></n-form-item>
         <n-form-item label="代理"><n-input v-model:value="form.proxy" placeholder="socks5://127.0.0.1:7890" /></n-form-item>
         <n-form-item label="默认输出目录">
           <div style="display:flex; gap:10px; align-items:center; width:100%">
@@ -105,8 +105,8 @@ async function checkEnvironment() {
     <div class="section-card">
       <div class="section-title">性能设置</div>
       <div class="grid-2">
-        <n-form-item label="并发 limit"><n-input-number v-model:value="form.limit" :min="1" :max="20" /></n-form-item>
-        <n-form-item label="线程 threads"><n-input-number v-model:value="form.threads" :min="1" :max="32" /></n-form-item>
+        <n-form-item label="并发数"><n-input-number v-model:value="form.limit" :min="1" :max="20" /></n-form-item>
+        <n-form-item label="线程数"><n-input-number v-model:value="form.threads" :min="1" :max="32" /></n-form-item>
         <n-form-item label="延迟"><n-input v-model:value="form.delay" placeholder="例如 2s，可为空" /></n-form-item>
       </div>
     </div>

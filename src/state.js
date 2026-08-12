@@ -67,8 +67,11 @@ export const appState = reactive({
   /**
    * 是否显示任务日志面板。当为 false 时隐藏日志面板，并在界面底部提供按钮重新展开。
    */
-  showLog: true,
-  activeView: 'dashboard',
+  // 日志抽屉默认收起：展开态会吃掉三分之一屏幕，而多数时候用户不看它。
+  showLog: false,
+  activeView: 'overview',
+  // 「新建任务」页当前选中的任务类型。
+  newTaskKind: 'export',
   /**
    * 当前主题，可选值为 'dark' 或 'light'。默认从 localStorage 中读取，若没有则默认为 dark。
    */

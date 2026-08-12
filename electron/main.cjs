@@ -284,7 +284,7 @@ function updateTrayMenu() {
     { label: `最近一次检测：${appStatus.lastScheduleCheck || '-'}`, enabled: false },
     { type: 'separator' },
     { label: '打开 HopeTDL', click: showMainWindow },
-    { label: '任务中心', click: () => navigateRenderer('taskCenter') },
+    { label: '任务', click: () => navigateRenderer('tasks') },
     { label: '设置', click: () => navigateRenderer('settings') },
     { type: 'separator' },
     {

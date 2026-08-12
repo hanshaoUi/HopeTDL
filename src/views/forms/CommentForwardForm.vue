@@ -1,12 +1,12 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { message, confirmHtml } from '../ui/naive'
-import ChatSelect from '../components/ChatSelect.vue'
-import CommandPreview from '../components/CommandPreview.vue'
-import { appState } from '../state.js'
-import { commandText, createTask, updateTaskStatus } from '../utils'
-import { chatId, chatTitle, findChatByValue } from '../chatCache'
-import { touchRecentChat } from '../historyStore'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { message, confirmHtml } from '../../ui/naive'
+import ChatSelect from '../../components/ChatSelect.vue'
+import CommandPreview from '../../components/CommandPreview.vue'
+import { appState } from '../../state.js'
+import { commandText, createTask, updateTaskStatus } from '../../utils'
+import { chatId, chatTitle, findChatByValue } from '../../chatCache'
+import { touchRecentChat } from '../../historyStore'
 
 const sourceChat = ref('')
 const targetChat = ref('')
@@ -30,6 +30,8 @@ const keywordCaseSensitive = ref(false)
 const keywordRegexMode = ref(false)
 const skipCommentsWhenPostBlocked = ref(true)
 const advancedMode = ref(false)
+let offProgress = null
+let offStatus = null
 
 const selectedSourceChat = ref(null)
 const selectedTargetChat = ref(null)
@@ -230,11 +232,14 @@ onMounted(() => {
     touchRecentChat(row)
   }
 
-  window.tdlApi.onCommentForwardProgress(data => {
+  // 没有 tdlApi 时（浏览器预览）直接跳过订阅，否则整个页面挂掉。
+  if (!window.tdlApi) return
+
+  offProgress = window.tdlApi.onCommentForwardProgress(data => {
     if (currentTaskId.value && data.taskId !== currentTaskId.value) return
     progress.value = { ...progress.value, ...data }
   })
-  window.tdlApi.onCommentForwardStatus(data => {
+  offStatus = window.tdlApi.onCommentForwardStatus(data => {
     if (currentTaskId.value && data.taskId !== currentTaskId.value) return
     status.value = data.status || status.value
     if (data.workDir) currentWorkDir.value = data.workDir
@@ -243,11 +248,15 @@ onMounted(() => {
     }
   })
 })
+
+// 原来这两个订阅从不注销，页面每次重建都会多挂一份监听。
+onUnmounted(() => {
+  if (offProgress) offProgress()
+  if (offStatus) offStatus()
+})
 </script>
 
 <template>
-  <h1 class="page-title">评论区顺序转发</h1>
-  <p class="page-desc">把频道主消息和每条消息下的评论区按顺序导出 / 转发：主消息 1 → 评论区 1 → 主消息 2 → 评论区 2。</p>
 
   <div class="card">
     <div class="comment-forward-head">
@@ -278,7 +287,7 @@ onMounted(() => {
       </div>
 
       <div class="grid-2">
-        <n-form-item label="目标 Peer">
+        <n-form-item label="目标对话">
           <ChatSelect
             v-model="targetChat"
             placeholder="从对话列表选择目标，或手动输入 @target / ID"
@@ -286,7 +295,7 @@ onMounted(() => {
             @select="handleTargetSelect"
           />
         </n-form-item>
-        <n-form-item label="目标话题 ID">
+        <n-form-item label="目标话题">
           <n-select
             v-if="targetTopics.length"
             v-model:value="targetTopicId"
@@ -309,7 +318,7 @@ onMounted(() => {
             <n-radio-button value="clone">clone</n-radio-button>
           </n-radio-group>
         </n-form-item>
-        <n-form-item label="每条间隔 ms">
+        <n-form-item label="每条间隔">
           <n-input-number v-model:value="delayMs" :min="0" :max="60000" :step="500" />
         </n-form-item>
       </div>

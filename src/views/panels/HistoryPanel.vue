@@ -1,8 +1,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { message } from '../ui/naive'
-import { appState } from '../state'
-import { getDownloadRecords, getExportRecords, getForwardRecords, getUploadRecords } from '../historyStore'
+import { message } from '../../ui/naive'
+import { appState } from '../../state'
+import { getDownloadRecords, getExportRecords, getForwardRecords, getUploadRecords } from '../../historyStore'
 
 const activeTab = ref('exports')
 const refreshKey = ref(0)
@@ -20,22 +20,26 @@ function copyText(text) {
 
 function applyExport(row) {
   appState.selectedExportRecord = row
-  appState.activeView = 'export'
+  appState.newTaskKind = 'export'
+  appState.activeView = 'newTask'
 }
 
 function applyForward(row) {
   appState.selectedForwardRecord = row
-  appState.activeView = 'forward'
+  appState.newTaskKind = 'forward'
+  appState.activeView = 'newTask'
 }
 
 function applyUpload(row) {
   appState.selectedUploadRecord = row
-  appState.activeView = 'upload'
+  appState.newTaskKind = 'upload'
+  appState.activeView = 'newTask'
 }
 
 function applyDownload(row) {
   appState.selectedDownloadRecord = row
-  appState.activeView = 'download'
+  appState.newTaskKind = 'download'
+  appState.activeView = 'newTask'
 }
 
 function showFile(filePath) {
@@ -59,8 +63,6 @@ onMounted(refresh)
 </script>
 
 <template>
-  <h1 class="page-title">历史记录</h1>
-  <p class="page-desc">集中查看导出、转发、下载、上传记录。可以套用参数、复制命令、打开文件位置。</p>
 
   <div class="card">
     <div class="history-toolbar">
@@ -78,10 +80,10 @@ onMounted(refresh)
         <thead>
           <tr>
             <th style="width:170px;">时间</th>
-            <th style="width:170px;">源聊天 -c</th>
-            <th style="width:150px;">本次 -i</th>
+            <th style="width:170px;">源对话</th>
+            <th style="width:150px;">本次范围</th>
             <th style="width:110px;">最大ID</th>
-            <th style="width:210px;">下次建议 -i</th>
+            <th style="width:210px;">下次建议范围</th>
             <th style="min-width:280px;">输出文件</th>
             <th style="width:290px;">操作</th>
           </tr>

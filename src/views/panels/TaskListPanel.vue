@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { appState } from '../state'
-import { message, confirmHtml } from '../ui/naive'
+import { appState } from '../../state'
+import { message, confirmHtml } from '../../ui/naive'
 import {
   commandText,
   copyTaskCommand,
@@ -12,8 +12,8 @@ import {
   runScheduledTaskNow,
   stopTask,
   toggleSchedule
-} from '../utils'
-import { isTaskFailed, isTaskInterrupted, isTaskRunning, TASK_STATE, taskStatusType } from '../taskState'
+} from '../../utils'
+import { isTaskInterrupted, isTaskRunning, TASK_STATE, taskStatusType } from '../../taskState'
 
 const statusFilter = ref('全部')
 const selectedTaskId = ref('')
@@ -44,8 +44,6 @@ const filteredTasks = computed(() => {
 })
 
 const runningCount = computed(() => appState.tasks.filter(isTaskRunning).length)
-const successCount = computed(() => appState.tasks.filter(task => task.status === '成功').length)
-const failedCount = computed(() => appState.tasks.filter(isTaskFailed).length)
 const interruptedCount = computed(() => appState.tasks.filter(isTaskInterrupted).length)
 const enabledScheduleCount = computed(() => appState.schedules.filter(schedule => schedule.enabled).length)
 const selectedTask = computed(() => appState.tasks.find(task => task.id === selectedTaskId.value) || null)
@@ -291,8 +289,6 @@ async function retryInterruptedTasks() {
 </script>
 
 <template>
-  <h1 class="page-title">任务中心</h1>
-  <p class="page-desc">集中查看、停止、重试和复制所有 tdl 任务，切换页面后任务状态仍保留。</p>
 
   <n-alert
     v-if="appState.recovery.interruptedCount"
@@ -305,21 +301,6 @@ async function retryInterruptedTasks() {
   <div v-if="interruptedCount" class="action-row section-actions" style="margin-bottom:16px">
     <n-button secondary @click="statusFilter = '已中断'">仅看已中断</n-button>
     <n-button type="primary" secondary @click="retryInterruptedTasks">批量重试已中断</n-button>
-  </div>
-
-  <div class="grid-3">
-    <div class="stat">
-      <div class="label">运行中</div>
-      <div class="value">{{ runningCount }}</div>
-    </div>
-    <div class="stat">
-      <div class="label">成功</div>
-      <div class="value">{{ successCount }}</div>
-    </div>
-    <div class="stat">
-      <div class="label">失败</div>
-      <div class="value">{{ failedCount }}</div>
-    </div>
   </div>
 
   <div class="card task-center-card">

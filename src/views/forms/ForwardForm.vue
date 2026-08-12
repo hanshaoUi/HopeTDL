@@ -1,12 +1,12 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { commandText, runTask } from '../utils'
-import CommandPreview from '../components/CommandPreview.vue'
-import ChatSelect from '../components/ChatSelect.vue'
-import { appState } from '../state.js'
-import { message, confirmHtml } from '../ui/naive'
-import { chatId, chatTitle, findChatByValue } from '../chatCache'
-import { saveForwardRecord, touchRecentChat } from '../historyStore'
+import { commandText, runTask } from '../../utils'
+import CommandPreview from '../../components/CommandPreview.vue'
+import ChatSelect from '../../components/ChatSelect.vue'
+import { appState } from '../../state.js'
+import { message, confirmHtml } from '../../ui/naive'
+import { chatId, chatTitle, findChatByValue } from '../../chatCache'
+import { saveForwardRecord, touchRecentChat } from '../../historyStore'
 const sourceType = ref('file')
 const from = ref('')
 const peer = ref('')
@@ -170,8 +170,6 @@ async function run() {
 
 </script>
 <template>
-  <h1 class="page-title">转发消息</h1>
-  <p class="page-desc">把 JSON / 链接转发到指定聊天或话题。默认开启 dry-run，避免误发。</p>
   <div class="card">
     <n-form label-width="120px">
       <n-form-item label="来源类型"><n-radio-group v-model:value="sourceType"><n-radio-button value="file">JSON 文件</n-radio-button><n-radio-button value="url">消息链接</n-radio-button></n-radio-group></n-form-item>
@@ -184,7 +182,7 @@ async function run() {
         </div>
       </n-form-item>
       <div class="grid-2">
-        <n-form-item label="目标 Peer">
+        <n-form-item label="目标对话">
           <ChatSelect
             v-model="peer"
             placeholder="从对话列表选择目标，或手动输入 @channel / ID"
@@ -192,7 +190,7 @@ async function run() {
             @select="handleTargetSelect"
           />
         </n-form-item>
-        <n-form-item label="Thread 话题">
+        <n-form-item label="目标话题">
           <n-select
             v-if="targetTopics.length"
             v-model:value="thread"
@@ -208,8 +206,8 @@ async function run() {
         </n-form-item>
       </div>
       <n-form-item label="模式"><n-radio-group v-model:value="mode"><n-radio-button value="direct">direct 保留来源</n-radio-button><n-radio-button value="clone">clone 复制发送</n-radio-button></n-radio-group></n-form-item>
-      <n-form-item label="选项"><n-checkbox v-model:checked="dryRun">dry-run 演练</n-checkbox><n-checkbox v-model:checked="silent">静默</n-checkbox><n-checkbox v-model:checked="single">单条</n-checkbox><n-checkbox v-model:checked="desc">倒序</n-checkbox></n-form-item>
-      <n-form-item label="编辑表达式"><n-input v-model:value="edit" placeholder='例如 Message.Message + "\n整理自频道"' /></n-form-item>
+      <n-form-item label="选项"><n-checkbox v-model:checked="dryRun">演练模式，不真正发送</n-checkbox><n-checkbox v-model:checked="silent">静默</n-checkbox><n-checkbox v-model:checked="single">单条</n-checkbox><n-checkbox v-model:checked="desc">倒序</n-checkbox></n-form-item>
+      <n-form-item label="内容改写"><n-input v-model:value="edit" placeholder='例如 Message.Message + "\n整理自频道"' /></n-form-item>
     </n-form>
     <CommandPreview :command="commandText(args)" />
     <div style="height:16px"></div>
