@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { message } from '../../ui/naive'
-import { commandText, runTask, runTaskAndWait } from '../../utils'
+import { commandTextForSpec, defaultOutputDir, runJob, runJobAndWait } from '../../utils'
 import CommandPreview from '../../components/CommandPreview.vue'
 import ChatSelect from '../../components/ChatSelect.vue'
 import { appState } from '../../state.js'
@@ -61,55 +61,59 @@ function commentExportFile(workDir, id) {
   return joinPath(workDir, `comments_${cleanPathPart(commentsChat.value)}_${cleanPathPart(id)}.json`)
 }
 
-const args = computed(() => {
-  const a = ['download']
-  if (dir.value) a.push('-d', dir.value)
-  if (includeExt.value.trim()) a.push('-i', includeExt.value.trim())
-  if (excludeExt.value.trim()) a.push('-e', excludeExt.value.trim())
-  if (template.value.trim()) a.push('--template', template.value.trim())
-  if (group.value) a.push('--group')
-  if (skipSame.value) a.push('--skip-same')
-  if (rewriteExt.value) a.push('--rewrite-ext')
-  if (serve.value) {
-    a.push('--serve')
-    if (port.value) a.push('--port', String(port.value))
+const spec = computed(() => ({
+  kind: 'download',
+  directory: dir.value,
+  include: includeExt.value.trim(),
+  exclude: excludeExt.value.trim(),
+  template: template.value.trim(),
+  group: group.value,
+  skipSame: skipSame.value,
+  rewriteExt: rewriteExt.value,
+  serve: serve.value,
+  port: port.value,
+  takeout: takeout.value,
+  desc: desc.value,
+  resumeMode: resumeMode.value,
+  source: {
+    type: sourceType.value === 'url' ? 'url' : 'file',
+    items: sourceType.value === 'url'
+      ? urls.value
+      : sourceType.value === 'file'
+        ? files.value
+        : commentsIds.value.map(id => commentExportFile('<workDir>', id))
   }
-  if (takeout.value) a.push('--takeout')
-  if (desc.value) a.push('--desc')
-  if (resumeMode.value === 'continue') a.push('--continue')
-  if (resumeMode.value === 'restart') a.push('--restart')
-  if (sourceType.value === 'url') {
-    for (const item of urls.value) a.push('-u', item)
-  } else if (sourceType.value === 'file') {
-    for (const item of files.value) a.push('-f', item)
-  } else if (sourceType.value === 'comments') {
-    for (const id of commentsIds.value) a.push('-f', commentExportFile('<workDir>', id))
-  }
-  return a
-})
+}))
 
 const previewCommand = computed(() => {
-  if (sourceType.value !== 'comments') return commandText(args.value)
+  if (sourceType.value !== 'comments') return commandTextForSpec(spec.value)
   const ids = commentsIds.value.length ? commentsIds.value : ['<主消息ID>']
   const lines = [
     '# 评论区下载会先导出评论区 JSON，再下载其中媒体'
   ]
   for (const id of ids) {
-    lines.push(commandText(['chat', 'export', '-c', commentsChat.value || '<源频道/群组>', '--reply', id, '--all', '--with-content', '-o', commentExportFile('<workDir>', id)]))
+    lines.push(commandTextForSpec({
+      kind: 'export',
+      chat: commentsChat.value || '<源频道/群组>',
+      reply: id,
+      all: true,
+      withContent: true,
+      output: commentExportFile('<workDir>', id)
+    }))
   }
-  lines.push(commandText(args.value))
+  lines.push(commandTextForSpec(spec.value))
   return lines.join('\n')
 })
 
 async function pickDir() {
-  const selected = await window.tdlApi.openDirectory({ defaultPath: dir.value || appState.config?.defaultDownloadDir || await window.tdlApi.getDefaultOutputDir() })
+  const selected = await window.tdlApi.openDirectory({ defaultPath: dir.value || await defaultOutputDir() })
   if (selected) dir.value = selected
 }
 
 async function pickFiles() {
   const selected = await window.tdlApi.openFile({
     properties: ['openFile', 'multiSelections'],
-    defaultPath: dir.value || appState.config?.defaultDownloadDir || await window.tdlApi.getDefaultOutputDir(),
+    defaultPath: dir.value || await defaultOutputDir(),
     filters: [{ name: 'Exported Files', extensions: ['json', 'txt', '*'] }]
   })
   if (!selected) return
@@ -118,7 +122,7 @@ async function pickFiles() {
 }
 
 async function pickCommentsWorkDir() {
-  const selected = await window.tdlApi.openDirectory({ defaultPath: commentsWorkDir.value || dir.value || appState.config?.defaultDownloadDir || await window.tdlApi.getDefaultOutputDir() })
+  const selected = await window.tdlApi.openDirectory({ defaultPath: commentsWorkDir.value || dir.value || await defaultOutputDir() })
   if (selected) commentsWorkDir.value = selected
 }
 
@@ -195,7 +199,7 @@ async function run() {
   })
   loadHistory()
   if (sourceType.value !== 'comments') {
-    await runTask('download', args.value, '下载媒体')
+    await runJob(spec.value, '下载媒体')
     return
   }
 
@@ -203,16 +207,21 @@ async function run() {
   const exportedFiles = []
   for (const id of commentsIds.value) {
     const output = commentExportFile(workDir, id)
-    await runTaskAndWait('export', ['chat', 'export', '-c', commentsChat.value, '--reply', id, '--all', '--with-content', '-o', output], `导出评论区 ${id}`)
+    await runJobAndWait({
+      kind: 'export',
+      chat: commentsChat.value,
+      reply: id,
+      all: true,
+      withContent: true,
+      output
+    }, `导出评论区 ${id}`)
     exportedFiles.push(output)
   }
 
-  const downloadArgs = args.value.filter((item, index, source) => {
-    if (source[index - 1] === '-f' || source[index - 1] === '--file') return false
-    return item !== '-f' && item !== '--file'
-  })
-  for (const file of exportedFiles) downloadArgs.push('-f', file)
-  await runTask('download', downloadArgs, '下载评论区媒体')
+  await runJob({
+    ...spec.value,
+    source: { type: 'file', items: exportedFiles }
+  }, '下载评论区媒体')
 }
 
 useAppliedRecord('selectedDownloadRecord', applyRecord)
@@ -220,7 +229,7 @@ useAppliedRecord('selectedDownloadRecord', applyRecord)
 onMounted(async () => {
   loadHistory()
   if (!dir.value) {
-    dir.value = appState.config?.defaultDownloadDir || await window.tdlApi.getDefaultOutputDir()
+    dir.value = await defaultOutputDir()
   }
 })
 </script>

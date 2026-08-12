@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { appState } from '../state'
-import { commandText, runTask } from '../utils'
+import { commandTextForSpec, runJob } from '../utils'
 import { message } from '../ui/naive'
 import { isTaskFailed, isTaskRunning, taskStatusType } from '../taskState'
 
@@ -11,7 +11,7 @@ const loginType = ref('qr')
 const envLoading = ref(false)
 const envResult = ref(null)
 
-const loginArgs = computed(() => ['login', '-T', loginType.value])
+const loginSpec = computed(() => ({ kind: 'login', type: loginType.value }))
 const latestTasks = computed(() => appState.tasks.slice(0, 6))
 const runningCount = computed(() => appState.tasks.filter(isTaskRunning).length)
 const failedCount = computed(() => appState.tasks.filter(isTaskFailed).length)
@@ -32,7 +32,7 @@ async function checkEnvironment() {
 }
 
 function startLogin() {
-  runTask('login', loginArgs.value, `登录：${loginType.value}`)
+  runJob(loginSpec.value, `登录：${loginType.value}`)
 }
 
 // 最近一次登录任务成功后重新检查环境，让上面的状态跟着变，
@@ -115,7 +115,7 @@ onMounted(checkEnvironment)
         <n-radio-button value="desktop">Desktop 导入</n-radio-button>
       </n-radio-group>
       <n-button size="small" type="primary" @click="startLogin">开始登录</n-button>
-      <code class="inline-command">{{ commandText(loginArgs) }}</code>
+      <code class="inline-command">{{ commandTextForSpec(loginSpec) }}</code>
     </div>
 
     <!-- 验证码方式需要往 tdl 进程的 stdin 里输手机号和验证码，

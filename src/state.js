@@ -1,5 +1,6 @@
 import { reactive, shallowReactive } from 'vue'
 import { normalizeTaskRecord, recoverInterruptedTask } from './taskState'
+import { previewConfig } from '../shared/appDefaults.mjs'
 
 const TASKS_KEY = 'hopetdl.tasks.v1'
 const SCHEDULES_KEY = 'hopetdl.schedules.v1'
@@ -37,7 +38,7 @@ function readStoredSchedules() {
 }
 
 export const appState = reactive({
-  config: {},
+  config: previewConfig(),
   // 只存已换行的历史行，环形缓冲，写入统一走 logStore.appendLog。
   logs: [],
   // 未换行的活动行（进度条），每个 taskId+level 只占一条，随时被覆盖。

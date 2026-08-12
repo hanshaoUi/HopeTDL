@@ -2,7 +2,7 @@
 import { ref, computed, nextTick, watch } from 'vue'
 import { confirmHtml, message } from '../ui/naive'
 import { appState } from '../state'
-import { commandText } from '../utils'
+import { commandText, commandTextForSpec } from '../utils'
 import { allLogLines, clearLogs as resetLogs, MAX_LOG_LINES } from '../logStore'
 import { isTaskFailed, isTaskRunning } from '../taskState'
 
@@ -112,7 +112,7 @@ async function copyLine(log) {
 
 async function copyFailedCommands() {
   const text = failedTasks.value
-    .map(task => `${task.title || task.type}\n${commandText(task.args || [])}`)
+    .map(task => `${task.title || task.type}\n${task.command || (task.spec ? commandTextForSpec(task.spec) : commandText(task.args || []))}`)
     .join('\n\n')
   await writeClipboard(text, '失败任务命令已复制')
 }

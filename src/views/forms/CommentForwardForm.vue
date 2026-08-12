@@ -4,7 +4,7 @@ import { message, confirmHtml } from '../../ui/naive'
 import ChatSelect from '../../components/ChatSelect.vue'
 import CommandPreview from '../../components/CommandPreview.vue'
 import { appState } from '../../state.js'
-import { commandText, createTask, updateTaskStatus } from '../../utils'
+import { commandTextForSpec, defaultOutputDir, runJob, updateTaskStatus } from '../../utils'
 import { chatId, chatTitle, findChatByValue } from '../../chatCache'
 import { getCommentForwardRecords, saveCommentForwardRecord, touchRecentChat } from '../../historyStore'
 import { useAppliedRecord, useSelectedChat } from '../../useAppliedRecord'
@@ -74,11 +74,11 @@ const previewCommand = computed(() => {
   const range = startId.value || endId.value ? `${startId.value || 0},${endId.value || '9223372036854775807'}` : '全部'
   const lines = [
     `# 任务队列，不是一条 tdl 命令`,
-    commandText(['chat', 'export', '-c', sourceChat.value || '<源聊天>', ...(range === '全部' ? [] : ['-T', 'id', '-i', range]), '--all', '--with-content', '-o', '<workDir>/posts.json']),
+    commandTextForSpec({ kind: 'export', chat: sourceChat.value || '<源聊天>', selector: range === '全部' ? null : { type: 'id', input: range }, all: true, withContent: true, output: '<workDir>/posts.json' }),
     `# 然后循环每个消息 ID：`,
-    commandText(['chat', 'export', '-c', sourceChat.value || '<源聊天>', '-T', 'id', '-i', '<id>,<id>', '--all', '--with-content', '-o', '<workDir>/queue/post_<id>.json']),
-    includeComments.value ? commandText(['chat', 'export', '-c', sourceChat.value || '<源聊天>', '--reply', '<id>', '--all', '--with-content', '-o', '<workDir>/comments/comments_<id>.json']) : '# 未启用评论区处理',
-    exportOnly.value ? '# 仅导出，不转发' : commandText(['forward', '--from', '<filtered json>', '--to', targetTopicId.value ? '<workDir>/target_router.txt' : (targetChat.value || '<目标聊天>'), '--mode', mode.value])
+    commandTextForSpec({ kind: 'export', chat: sourceChat.value || '<源聊天>', selector: { type: 'id', input: '<id>,<id>' }, all: true, withContent: true, output: '<workDir>/queue/post_<id>.json' }),
+    includeComments.value ? commandTextForSpec({ kind: 'export', chat: sourceChat.value || '<源聊天>', reply: '<id>', all: true, withContent: true, output: '<workDir>/comments/comments_<id>.json' }) : '# 未启用评论区处理',
+    exportOnly.value ? '# 仅导出，不转发' : commandTextForSpec({ kind: 'forward', from: '<filtered json>', target: targetTopicId.value ? { routerFile: '<workDir>/target_router.txt' } : { peer: targetChat.value || '<目标聊天>' }, mode: mode.value })
   ]
   return lines.join('\n')
 })
@@ -164,9 +164,8 @@ function loadHistory() {
 
 useAppliedRecord('selectedCommentForwardRecord', applyRecord)
 
-function buildPayload() {
-  return {
-    taskId: currentTaskId.value,
+const spec = computed(() => ({
+    kind: 'comment-forward',
     sourceChat: sourceChat.value,
     targetChat: targetChat.value,
     targetTopicId: targetTopicId.value ? Number(targetTopicId.value) : null,
@@ -188,11 +187,10 @@ function buildPayload() {
     keywordCaseSensitive: keywordCaseSensitive.value,
     keywordRegexMode: keywordRegexMode.value,
     skipCommentsWhenPostBlocked: skipCommentsWhenPostBlocked.value
-  }
-}
+}))
 
 async function pickWorkDir() {
-  const dir = await window.tdlApi.openDirectory({ defaultPath: workDir.value || appState.config?.defaultDownloadDir || await window.tdlApi.getDefaultOutputDir() })
+  const dir = await window.tdlApi.openDirectory({ defaultPath: workDir.value || await defaultOutputDir() })
   if (dir) workDir.value = dir
 }
 
@@ -257,15 +255,13 @@ async function startTask() {
   currentTaskId.value = taskId
   status.value = 'running'
   progress.value = { current: 0, total: 0, id: '', stage: '' }
-  createTask('comment-forward', [], '评论区顺序转发', {
+  const result = await runJob(spec.value, '评论区顺序转发', {
     id: taskId,
     command: previewCommand.value,
     sourceChat: sourceChat.value,
     targetChat: targetChat.value,
     dryRun: dryRun.value
   })
-
-  const result = await window.tdlApi.startCommentForward(buildPayload())
   if (!result?.ok) {
     status.value = 'error'
     updateTaskStatus(taskId, '失败', { errorMessage: result?.message || '任务启动失败' })

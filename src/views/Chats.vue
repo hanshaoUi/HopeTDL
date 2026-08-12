@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { message } from '../ui/naive'
-import { commandText, runTask } from '../utils'
+import { commandTextForSpec, runJob } from '../utils'
 import CommandPreview from '../components/CommandPreview.vue'
 import { appState } from '../state.js'
 import { loadChatCache, chatId, chatTitle, chatUsername, chatType, chatTopics } from '../chatCache'
@@ -16,11 +16,11 @@ const isFilteredLiveResult = ref(false)
 // 过滤表达式和 table 输出是低频的高级用法，默认收起，不占主界面。
 const showAdvanced = ref(false)
 
-const args = computed(() => {
-  const a = ['chat', 'ls', '-o', output.value === 'table' ? 'table' : 'json']
-  if (filter.value) a.push('--filter', filter.value)
-  return a
-})
+const spec = computed(() => ({
+  kind: 'chat-list',
+  output: output.value === 'table' ? 'table' : 'json',
+  filter: filter.value
+}))
 
 const cacheMetaText = computed(() => {
   const meta = appState.chatCacheMeta || {}
@@ -118,7 +118,7 @@ async function loadFilteredLiveChats() {
 
 // 把 tdl 的 table 输出打到任务日志，不动这里的列表。
 function runTableOutput() {
-  runTask('chat-ls', ['chat', 'ls', '-o', 'table', ...(filter.value ? ['--filter', filter.value] : [])], '获取对话列表')
+  runJob({ ...spec.value, output: 'table' }, '获取对话列表')
 }
 
 onMounted(() => {
@@ -150,7 +150,7 @@ onMounted(() => {
       <span class="mini-muted">把 tdl 的表格输出打到任务日志里，不改变这里的列表。</span>
       <n-button @click="runTableOutput">输出到日志</n-button>
     </div>
-    <CommandPreview :command="commandText(args)" />
+    <CommandPreview :command="commandTextForSpec(spec)" />
   </div>
 
   <div class="chats-count">

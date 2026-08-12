@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
-import { commandText, runTask } from '../../utils'
+import { commandTextForSpec, defaultOutputDir, runJob } from '../../utils'
 import CommandPreview from '../../components/CommandPreview.vue'
 import ChatSelect from '../../components/ChatSelect.vue'
 import { appState } from '../../state.js'
@@ -40,13 +40,13 @@ function handleTargetSelect(row) {
 }
 
 async function pickPath() {
-  const dir = await window.tdlApi.openDirectory({ defaultPath: path.value || appState.config?.defaultDownloadDir || await window.tdlApi.getDefaultOutputDir() })
+  const dir = await window.tdlApi.openDirectory({ defaultPath: path.value || await defaultOutputDir() })
   if (dir) path.value = dir
 }
 
 async function pickFile() {
   const file = await window.tdlApi.openFile({
-    defaultPath: path.value || appState.config?.defaultDownloadDir || await window.tdlApi.getDefaultOutputDir(),
+    defaultPath: path.value || await defaultOutputDir(),
     filters: [
       { name: 'Media', extensions: ['mkv', 'mp4', 'mov', 'avi', 'mp3', 'm4a', 'flac', 'jpg', 'jpeg', 'png', 'webp'] },
       { name: 'All Files', extensions: ['*'] }
@@ -54,16 +54,15 @@ async function pickFile() {
   })
   if (file) path.value = file
 }
-const args = computed(() => {
-  const a = ['upload']
-  if (path.value) a.push('-p', path.value)
-  if (chat.value) a.push('-c', chat.value)
-  if (topic.value) a.push('--topic', topic.value)
-  if (finalCaption.value) a.push('--caption', finalCaption.value)
-  if (photo.value) a.push('--photo')
-  if (remove.value) a.push('--rm')
-  return a
-})
+const spec = computed(() => ({
+  kind: 'upload',
+  path: path.value,
+  chat: chat.value,
+  topic: topic.value,
+  caption: finalCaption.value,
+  photo: photo.value,
+  remove: remove.value
+}))
 // 换文件就重新切一次标签，除非用户已经手动改过。
 watch(path, value => {
   if (tagsTouched.value) return
@@ -119,10 +118,10 @@ function run() {
     tags: [...tags.value],
     photo: photo.value,
     remove: remove.value,
-    command: commandText(args.value),
+    command: commandTextForSpec(spec.value),
     time: new Date().toLocaleString()
   })
-  runTask('upload', args.value, '上传文件')
+  runJob(spec.value, '上传文件')
 }
 </script>
 <template>
@@ -181,7 +180,7 @@ function run() {
       </n-form-item>
       <n-form-item label="选项"><n-checkbox v-model:checked="photo">作为图片上传</n-checkbox><n-checkbox v-model:checked="remove">上传后删除本地</n-checkbox></n-form-item>
     </n-form>
-    <CommandPreview :command="commandText(args)" />
+    <CommandPreview :command="commandTextForSpec(spec)" />
     <div style="height:16px"></div>
     <n-button type="primary" @click="run">开始上传</n-button>
   </div>

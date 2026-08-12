@@ -4,13 +4,29 @@ import { message } from '../ui/naive'
 import { appState } from '../state'
 import { loadChatCache } from '../chatCache'
 
-const form = reactive({})
+const form = reactive({
+  forwardFilterEnabled: false,
+  filterKeywordsText: '',
+  filterKeywordAction: 'drop-message',
+  filterKeywordReplacement: '',
+  removeLinks: false,
+  blockImages: false,
+  blockVideos: false,
+  blockTextOnly: false,
+  keywordCaseSensitive: false,
+  keywordRegexMode: false
+})
 const envLoading = ref(false)
 const envResult = ref(null)
 const chatCacheDayOptions = [
   { label: '1 天', value: 1 },
   { label: '7 天 / 一周', value: 7 },
   { label: '30 天 / 一个月', value: 30 }
+]
+const keywordActionOptions = [
+  { label: '屏蔽整条消息', value: 'drop-message' },
+  { label: '只删除命中的行', value: 'remove-segment' },
+  { label: '替换命中内容', value: 'replace' }
 ]
 watchEffect(() => Object.assign(form, appState.config))
 
@@ -109,6 +125,42 @@ async function checkEnvironment() {
         <n-form-item label="线程数"><n-input-number v-model:value="form.threads" :min="1" :max="32" /></n-form-item>
         <n-form-item label="延迟"><n-input v-model:value="form.delay" placeholder="例如 2s，可为空" /></n-form-item>
       </div>
+    </div>
+
+    <div class="section-card">
+      <div class="section-title">转发过滤</div>
+      <n-form-item label="全局启用">
+        <n-switch v-model:value="form.forwardFilterEnabled" />
+        <span class="mini-muted" style="margin-left:10px">普通转发、导出后转发和评论区转发都会在发送前执行。</span>
+      </n-form-item>
+      <template v-if="form.forwardFilterEnabled">
+        <n-form-item label="关键词">
+          <n-input
+            v-model:value="form.filterKeywordsText"
+            type="textarea"
+            :rows="4"
+            placeholder="一行一个关键词，例如：广告、推广、返佣"
+          />
+        </n-form-item>
+        <div class="grid-2">
+          <n-form-item label="命中动作">
+            <n-select v-model:value="form.filterKeywordAction" :options="keywordActionOptions" />
+          </n-form-item>
+          <n-form-item v-if="form.filterKeywordAction === 'replace'" label="替换为">
+            <n-input v-model:value="form.filterKeywordReplacement" placeholder="留空即删除命中内容" />
+          </n-form-item>
+        </div>
+        <n-form-item label="内容清理">
+          <n-checkbox v-model:checked="form.removeLinks">删除链接</n-checkbox>
+          <n-checkbox v-model:checked="form.blockImages">屏蔽图片消息</n-checkbox>
+          <n-checkbox v-model:checked="form.blockVideos">屏蔽视频消息</n-checkbox>
+          <n-checkbox v-model:checked="form.blockTextOnly">屏蔽纯文字消息</n-checkbox>
+        </n-form-item>
+        <n-form-item label="匹配选项">
+          <n-checkbox v-model:checked="form.keywordCaseSensitive">区分大小写</n-checkbox>
+          <n-checkbox v-model:checked="form.keywordRegexMode">关键词按正则表达式处理</n-checkbox>
+        </n-form-item>
+      </template>
     </div>
 
     <div class="section-card">

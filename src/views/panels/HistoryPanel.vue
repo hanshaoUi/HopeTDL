@@ -12,6 +12,7 @@ const forwardRows = computed(() => { refreshKey.value; return getForwardRecords(
 const downloadRows = computed(() => { refreshKey.value; return getDownloadRecords() })
 const uploadRows = computed(() => { refreshKey.value; return getUploadRecords() })
 const commentForwardRows = computed(() => { refreshKey.value; return getCommentForwardRecords() })
+const currentNamespace = computed(() => String(appState.config?.ns || 'hope'))
 
 function refresh() { refreshKey.value++ }
 
@@ -80,6 +81,7 @@ onMounted(refresh)
         <n-tab-pane :tab="`上传历史 ${uploadRows.length}`" name="uploads" />
         <n-tab-pane :tab="`评论区转发 ${commentForwardRows.length}`" name="commentForwards" />
       </n-tabs>
+      <n-tag size="small" :bordered="false">ns: {{ currentNamespace }}</n-tag>
       <n-button @click="refresh">刷新历史</n-button>
     </div>
 

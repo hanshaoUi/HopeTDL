@@ -150,7 +150,7 @@ src/                    纯展示：订阅快照，提交 JobSpec
 |---|---|---|
 | ✅ 1 | 内存与性能止血（见 PERF-NOTES.md） | 低，无行为变更 |
 | ✅ 2 | `electron/shared/messageJson.cjs`：消息 JSON 解析逻辑合并为唯一实现 | 低 |
-| 3 | JobSpec 模型 + 各页面改为提交 spec | 中，要逐页改 |
+| ✅ 3 | JobSpec 模型 + 各页面改为提交 spec | 已完成：预览、执行、重试、定时计划统一消费 spec；旧 args 记录保留兼容 |
 | 4 | 主进程 TaskQueue + scheduler 迁移，渲染端改订阅 | 中高，收益最大 |
 | 5 | store 收敛与 localStorage 数据迁移 | 中，需要迁移代码 |
 | 6 | 日志落盘 + 按需窗口拉取 | 低 |

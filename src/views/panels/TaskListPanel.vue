@@ -4,6 +4,7 @@ import { appState } from '../../state'
 import { message, confirmHtml } from '../../ui/naive'
 import {
   commandText,
+  commandTextForSpec,
   copyTaskCommand,
   createScheduleFromTask,
   deleteSchedule,
@@ -49,7 +50,7 @@ const enabledScheduleCount = computed(() => appState.schedules.filter(schedule =
 const selectedTask = computed(() => appState.tasks.find(task => task.id === selectedTaskId.value) || null)
 const selectedSchedule = computed(() => appState.schedules.find(schedule => schedule.id === selectedScheduleId.value) || null)
 const schedulableTaskOptions = computed(() => appState.tasks
-  .filter(task => task.type !== 'comment-forward' && Array.isArray(task.args) && task.args.length)
+  .filter(task => task.type !== 'comment-forward' && (task.spec || (Array.isArray(task.args) && task.args.length)))
   .slice(0, 50)
   .map(task => ({
     label: `${task.title || task.type} / ${task.createdAt || task.id}`,
@@ -61,7 +62,11 @@ const triggerOptions = [
 ]
 
 function taskCommand(task) {
-  return task.command || commandText(task.args || [])
+  return task.command || (task.spec ? commandTextForSpec(task.spec) : commandText(task.args || []))
+}
+
+function scheduleCommand(schedule) {
+  return schedule.spec ? commandTextForSpec(schedule.spec) : commandText(schedule.args || [])
 }
 
 function taskSummary(task) {
@@ -373,7 +378,7 @@ async function retryInterruptedTasks() {
           <tr v-for="schedule in appState.schedules" :key="schedule.id">
             <td>
               <div class="table-title">{{ schedule.name || schedule.type }}</div>
-              <div class="row-details truncate-cell">{{ commandText(schedule.args || []) }}</div>
+              <div class="row-details truncate-cell">{{ scheduleCommand(schedule) }}</div>
               <div class="row-details">状态：{{ schedule.enabled ? '已启用' : '已停用' }}；{{ schedule.lastStatus || '未运行' }}</div>
               <div v-if="schedule.triggerMode === 'chat-update'" class="row-details">
                 检测：{{ schedule.watchChat || '-' }}；已处理到 ID：{{ schedule.lastSeenMessageId || '-' }}；上次检测：{{ schedule.lastCheckedAt || '-' }}

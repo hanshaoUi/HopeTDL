@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { commandText, runTask } from '../../utils'
+import { commandTextForSpec, defaultOutputDir, runJob } from '../../utils'
 import CommandPreview from '../../components/CommandPreview.vue'
 import ChatSelect from '../../components/ChatSelect.vue'
 import { appState } from '../../state.js'
@@ -48,7 +48,7 @@ function joinPath(dir, fileName) {
 }
 
 async function defaultJsonFile() {
-  const dir = appState.config?.defaultDownloadDir || await window.tdlApi.getDefaultOutputDir()
+  const dir = await defaultOutputDir()
   return joinPath(dir, 'messages.json')
 }
 
@@ -82,19 +82,17 @@ useSelectedChat(row => {
 onMounted(async () => {
   if (!from.value && sourceType.value === 'file') from.value = await defaultJsonFile()
 })
-const toValue = computed(() => thread.value ? `{ Peer: "${peer.value}", Thread: ${thread.value} }` : peer.value)
-const args = computed(() => {
-  const a = ['forward']
-  if (from.value) a.push('--from', from.value)
-  if (peer.value) a.push('--to', toValue.value)
-  if (mode.value) a.push('--mode', mode.value)
-  if (dryRun.value) a.push('--dry-run')
-  if (silent.value) a.push('--silent')
-  if (single.value) a.push('--single')
-  if (desc.value) a.push('--desc')
-  if (edit.value) a.push('--edit', edit.value)
-  return a
-})
+const spec = computed(() => ({
+  kind: 'forward',
+  from: from.value,
+  target: { peer: peer.value, thread: thread.value || null },
+  mode: mode.value,
+  dryRun: dryRun.value,
+  silent: silent.value,
+  single: single.value,
+  desc: desc.value,
+  edit: edit.value
+}))
 function targetLabel() {
   const row = selectedTargetChat.value || findChatByValue(peer.value, appState.cachedChats || [])
   const title = chatTitle(row)
@@ -131,7 +129,7 @@ function makeRecord(extra = {}) {
     single: single.value,
     desc: desc.value,
     edit: edit.value,
-    command: commandText(args.value),
+    command: commandTextForSpec(spec.value),
     time: new Date().toLocaleString(),
     ...extra
   }
@@ -165,7 +163,7 @@ async function run() {
   const record = saveForwardRecord(makeRecord({ estimatedMessages: countText }))
   const row = selectedTargetChat.value || findChatByValue(peer.value, appState.cachedChats || [])
   if (row) touchRecentChat(row)
-  await runTask('forward', args.value, '转发消息')
+  await runJob(spec.value, '转发消息')
   message.success('已记录本次转发参数')
 }
 
@@ -210,7 +208,7 @@ async function run() {
       <n-form-item label="选项"><n-checkbox v-model:checked="dryRun">演练模式，不真正发送</n-checkbox><n-checkbox v-model:checked="silent">静默</n-checkbox><n-checkbox v-model:checked="single">单条</n-checkbox><n-checkbox v-model:checked="desc">倒序</n-checkbox></n-form-item>
       <n-form-item label="内容改写"><n-input v-model:value="edit" placeholder='例如 Message.Message + "\n整理自频道"' /></n-form-item>
     </n-form>
-    <CommandPreview :command="commandText(args)" />
+    <CommandPreview :command="commandTextForSpec(spec)" />
     <div style="height:16px"></div>
     <n-alert v-if="dryRun" type="warning"  :show-icon="true" :closable="false" title="当前是 dry-run，只演练不真正发送。正式转发前取消勾选。" />
     <div style="height:16px"></div>

@@ -1,12 +1,12 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
-import { message } from '../../ui/naive'
-import { commandText, runTask } from '../../utils'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { confirmHtml, message } from '../../ui/naive'
+import { commandTextForSpec, defaultOutputDir, runJob, runJobAndWait } from '../../utils'
 import CommandPreview from '../../components/CommandPreview.vue'
 import ChatSelect from '../../components/ChatSelect.vue'
 import { appState } from '../../state.js'
 import { chatId as getChatId, chatTitle as getChatTitle, findChatByValue } from '../../chatCache'
-import { readJson, touchRecentChat, writeJson } from '../../historyStore'
+import { readJson, saveForwardRecord, touchRecentChat, writeJson } from '../../historyStore'
 import { useAppliedRecord } from '../../useAppliedRecord'
 
 const chat = ref('')
@@ -19,6 +19,13 @@ const selectedSourceChat = ref(null)
 const pendingExportTaskId = ref('')
 const pendingExportRecord = ref(null)
 const autoOutput = ref(true)
+const autoForward = ref(false)
+const forwardPeer = ref('')
+const forwardThread = ref('')
+const forwardMode = ref('clone')
+const forwardDryRun = ref(true)
+const selectedForwardChat = ref(null)
+let offDone = null
 const typeOptions = [
   { label: '按消息 ID', value: 'id' },
   { label: '最近 N 条', value: 'last' },
@@ -32,6 +39,11 @@ const nsKey = computed(() => String(appState.config?.ns || 'default'))
 const chatKey = computed(() => String(chat.value || '').trim())
 const chatLastRecord = computed(() => chatKey.value ? getChatMemory(chatKey.value) : null)
 const recentRecords = computed(() => exportMemory.value.records?.slice(0, 8) || [])
+const forwardTopics = computed(() => Array.isArray(selectedForwardChat.value?.topics) ? selectedForwardChat.value.topics : [])
+const forwardTopicOptions = computed(() => forwardTopics.value.map(topic => ({
+  label: `${topic.title || topic.id} / ${topic.id}`,
+  value: String(topic.id)
+})))
 
 function normalizeChatKey(value) {
   const raw = String(value || '').trim()
@@ -107,7 +119,7 @@ function sourceChatRow() {
 }
 
 async function defaultOutputFile() {
-  const baseDir = appState.config?.defaultDownloadDir || await window.tdlApi.getDefaultOutputDir()
+  const baseDir = await defaultOutputDir()
   const row = sourceChatRow()
   const title = getChatTitle(row) || chat.value || 'chat'
   const id = getChatId(row) || chat.value || 'unknown'
@@ -131,6 +143,14 @@ function handleSourceSelect(row) {
   }
   autoOutput.value = true
   updateSmartOutput({ force: true })
+}
+
+function handleForwardTargetSelect(row) {
+  selectedForwardChat.value = row
+  if (row) touchRecentChat(row)
+  if (forwardThread.value && !forwardTopics.value.some(topic => String(topic.id) === String(forwardThread.value))) {
+    forwardThread.value = ''
+  }
 }
 
 
@@ -171,7 +191,7 @@ function makeRecord(extra = {}) {
     output: output.value,
     ns: nsKey.value,
     time: new Date().toLocaleString(),
-    command: commandText(args.value),
+    command: commandTextForSpec(spec.value),
     ...extra
   }
 }
@@ -269,7 +289,14 @@ function applyAnalyzeResultToRecord(record, analysis) {
     input: analysis.nextInput,
     analyzedAt: new Date().toLocaleString()
   }
-  next.command = commandText(['chat', 'export', ...(next.chat ? ['-c', next.chat] : []), '-T', next.type || 'id', ...(next.input ? ['-i', next.input] : []), ...(next.all ? ['--all'] : []), ...(next.raw ? ['--raw'] : []), ...(next.output ? ['-o', next.output] : [])])
+  next.command = commandTextForSpec({
+    kind: 'export',
+    chat: next.chat,
+    selector: { type: next.type || 'id', input: next.input },
+    all: next.all,
+    raw: next.raw,
+    output: next.output
+  })
   return next
 }
 
@@ -320,7 +347,8 @@ onMounted(async () => {
   autoOutput.value = true
   await updateSmartOutput({ force: true })
 
-  window.tdlApi.onDone(async (data) => {
+  if (!window.tdlApi?.onDone) return
+  offDone = window.tdlApi.onDone(async (data) => {
     if (!pendingExportTaskId.value || data.taskId !== pendingExportTaskId.value) return
     const record = pendingExportRecord.value
     pendingExportTaskId.value = ''
@@ -334,20 +362,43 @@ onMounted(async () => {
   })
 })
 
+onUnmounted(() => {
+  if (offDone) offDone()
+})
+
 // 切换命名空间后重新读取对应历史
 watch(nsKey, () => loadMemory())
 watch([chat, type, input], () => updateSmartOutput())
 
-const args = computed(() => {
-  const a = ['chat', 'export']
-  if (chat.value) a.push('-c', chat.value)
-  if (type.value) a.push('-T', type.value)
-  if (input.value) a.push('-i', input.value)
-  if (all.value) a.push('--all')
-  if (raw.value) a.push('--raw')
-  if (output.value) a.push('-o', output.value)
-  return a
-})
+const spec = computed(() => ({
+  kind: 'export',
+  chat: chat.value,
+  selector: { type: type.value, input: input.value },
+  all: all.value,
+  raw: raw.value,
+  output: output.value
+}))
+
+const forwardSpec = computed(() => ({
+  kind: 'forward',
+  from: output.value,
+  target: { peer: forwardPeer.value, thread: forwardThread.value || null },
+  mode: forwardMode.value,
+  dryRun: forwardDryRun.value
+}))
+
+function forwardTargetLabel() {
+  const row = selectedForwardChat.value || findChatByValue(forwardPeer.value, appState.cachedChats || [])
+  const title = getChatTitle(row)
+  const id = getChatId(row) || forwardPeer.value
+  return title ? `${title}（${id}）` : String(forwardPeer.value || '')
+}
+
+function forwardThreadLabel() {
+  if (!forwardThread.value) return '未指定'
+  const topic = forwardTopics.value.find(item => String(item.id) === String(forwardThread.value))
+  return topic ? `${topic.title || topic.id}（${topic.id}）` : String(forwardThread.value)
+}
 
 async function run() {
   if (requiresInput() && !String(input.value || '').trim()) {
@@ -368,13 +419,60 @@ async function run() {
   const row = sourceChatRow()
   if (row) touchRecentChat(row)
 
+  if (autoForward.value && !String(forwardPeer.value || '').trim()) {
+    message.error('已开启导出后转发，请先选择目标对话')
+    return
+  }
+
+  if (autoForward.value && !forwardDryRun.value) {
+    try {
+      await confirmHtml([
+        `<p><strong>导出文件：</strong>${output.value}</p>`,
+        `<p><strong>目标聊天：</strong>${forwardTargetLabel()}</p>`,
+        `<p><strong>目标话题：</strong>${forwardThreadLabel()}</p>`,
+        '<p style="color:#d03050">导出成功后会立即实际发送，请再次确认目标。</p>'
+      ].join(''), '确认导出后转发', {
+        confirmButtonText: '确认导出并转发',
+        cancelButtonText: '取消',
+        type: 'error',
+        dangerouslyUseHTMLString: true
+      })
+    } catch {
+      return
+    }
+  }
+
   const record = makeRecord({
     usedInput: String(input.value || '').trim(),
     autoAnalyzeNextInput: canAutoAnalyzeNextInput()
   })
   // 先保存草稿，任务成功后再用导出文件分析结果更新为 nextInput。
   saveMemory(record)
-  const started = await runTask('export', args.value, '导出消息')
+  if (autoForward.value) {
+    try {
+      await runJobAndWait(spec.value, '导出消息')
+      await finalizeExportMemory(record)
+      saveForwardRecord({
+        sourceType: 'file',
+        from: output.value,
+        peer: forwardPeer.value,
+        targetLabel: forwardTargetLabel(),
+        thread: forwardThread.value,
+        threadLabel: forwardThreadLabel(),
+        mode: forwardMode.value,
+        dryRun: forwardDryRun.value,
+        command: commandTextForSpec(forwardSpec.value),
+        time: new Date().toLocaleString(),
+        chain: 'export-forward'
+      })
+      await runJob(forwardSpec.value, '导出后转发')
+      message.success('导出成功，已启动后续转发')
+    } catch (err) {
+      message.error(`导出后转发链路已停止：${err?.message || err}`)
+    }
+    return
+  }
+  const started = await runJob(spec.value, '导出消息')
   pendingExportTaskId.value = started?.taskId || ''
   pendingExportRecord.value = record
 }
@@ -435,8 +533,47 @@ async function run() {
           <n-button @click="pickOutput">选择</n-button>
         </div>
       </n-form-item>
+      <n-form-item label="完成后转发">
+        <n-switch v-model:value="autoForward" />
+        <span class="mini-muted" style="margin-left:10px">导出成功后，将本次 JSON 直接交给转发任务。</span>
+      </n-form-item>
+      <template v-if="autoForward">
+        <div class="grid-2">
+          <n-form-item label="目标对话">
+            <ChatSelect
+              v-model="forwardPeer"
+              placeholder="选择后续转发目标"
+              button-text="更新缓存"
+              @select="handleForwardTargetSelect"
+            />
+          </n-form-item>
+          <n-form-item label="目标话题">
+            <n-select
+              v-if="forwardTopics.length"
+              v-model:value="forwardThread"
+              filterable
+              tag
+              clearable
+              :options="forwardTopicOptions"
+              placeholder="可选"
+            />
+            <n-input v-else v-model:value="forwardThread" placeholder="可选，例如 65054" />
+          </n-form-item>
+        </div>
+        <n-form-item label="转发设置">
+          <n-radio-group v-model:value="forwardMode">
+            <n-radio-button value="direct">direct 保留来源</n-radio-button>
+            <n-radio-button value="clone">clone 复制发送</n-radio-button>
+          </n-radio-group>
+          <n-checkbox v-model:checked="forwardDryRun" style="margin-left:18px">演练模式，不真正发送</n-checkbox>
+        </n-form-item>
+      </template>
     </n-form>
-    <CommandPreview :command="commandText(args)" />
+    <CommandPreview :command="commandTextForSpec(spec)" />
+    <template v-if="autoForward">
+      <div style="height:10px"></div>
+      <CommandPreview :command="commandTextForSpec(forwardSpec)" />
+    </template>
     <div style="height:16px"></div>
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
       <n-button type="primary" @click="run">开始导出</n-button>

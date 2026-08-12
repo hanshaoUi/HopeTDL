@@ -6,11 +6,12 @@
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "concurrently -k \"vite\" \"wait-on tcp:5174 && electron .\"",
+    "test": "node --test test/*.test.mjs",
     "build": "vite build",
     "start": "electron .",
     "build:dist": "npm run build && electron-builder",
     "build:mac": "npm run build && electron-builder --mac",
-    "build:win": "npm run build && electron-builder --win",
+    "build:win": "npm run build && electron-builder --win --x64",
     "build:linux": "npm run build && electron-builder --linux"
   },
   "//dependencies": "主进程只用 Electron 内置模块，渲染端代码已被 vite 打包进 dist/，所以运行时不需要任何 npm 依赖。放在 dependencies 里的包会被 electron-builder 原样塞进安装包。",
@@ -35,6 +36,7 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "shared/**/*",
       "assets/icons/**/*",
       "package.json"
     ],
@@ -46,7 +48,7 @@
       ]
     },
     "win": {
-      "icon": "assets/icons/icon.ico",
+      "icon": "assets/icons/icon.png",
       "target": [
         "nsis",
         "zip"

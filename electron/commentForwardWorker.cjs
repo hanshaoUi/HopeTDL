@@ -4,10 +4,8 @@ const { spawn } = require('child_process')
 const EventEmitter = require('events')
 const {
   extractMessageIds,
-  isTrustedArrayKey,
-  looksLikeMessageObject,
-  messageIdOf
 } = require('./shared/messageJson.cjs')
+const { filterAndCount } = require('./shared/messageFilter.cjs')
 
 // 子进程输出只保留尾部这么多字符用于报错，其余丢弃。
 const OUTPUT_TAIL_LIMIT = 32 * 1024
@@ -47,147 +45,6 @@ function createStamp() {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
 }
 
-function parseKeywords(input) {
-  if (!input) return []
-  if (Array.isArray(input)) return input.map(item => String(item).trim()).filter(Boolean)
-  return String(input)
-    .split(/\r?\n|,|，/)
-    .map(item => item.trim())
-    .filter(Boolean)
-}
-
-function escapeRegExp(text) {
-  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-function createKeywordMatcher(config) {
-  const keywords = parseKeywords(config.blockKeywordsText || config.blockKeywords)
-  if (!keywords.length) return null
-
-  const caseSensitive = Boolean(config.keywordCaseSensitive)
-  const regexMode = Boolean(config.keywordRegexMode)
-  const rules = keywords.map(keyword => {
-    if (regexMode) {
-      try {
-        return { raw: keyword, regex: new RegExp(keyword, caseSensitive ? 'm' : 'im') }
-      } catch {
-        return { raw: keyword, regex: new RegExp(escapeRegExp(keyword), caseSensitive ? 'm' : 'im') }
-      }
-    }
-    return { raw: keyword, keyword: caseSensitive ? keyword : keyword.toLowerCase() }
-  })
-
-  return function matchKeyword(text) {
-    const source = String(text || '')
-    const comparable = caseSensitive ? source : source.toLowerCase()
-    for (const rule of rules) {
-      if (rule.regex) {
-        if (rule.regex.test(source)) return rule.raw
-      } else if (comparable.includes(rule.keyword)) {
-        return rule.raw
-      }
-    }
-    return null
-  }
-}
-
-function collectTextCandidates(obj, depth = 0) {
-  if (!obj || depth > 5) return []
-  if (typeof obj === 'string') return [obj]
-  if (Array.isArray(obj)) return obj.flatMap(item => collectTextCandidates(item, depth + 1))
-  if (typeof obj !== 'object') return []
-
-  const preferredKeys = [
-    'message', 'Message', 'text', 'Text', 'caption', 'Caption', 'content', 'Content',
-    'raw_text', 'rawText', 'body', 'Body', 'title', 'Title', 'description', 'Description'
-  ]
-  const result = []
-  for (const key of preferredKeys) {
-    if (typeof obj[key] === 'string') result.push(obj[key])
-  }
-  for (const [key, value] of Object.entries(obj)) {
-    if (typeof value === 'string') {
-      // 尽量避免路径、文件名、URL、peer 等内部字段误伤。
-      if (/path|file|dir|url|thumb|mime|type|peer|chat|from|to/i.test(key)) continue
-      result.push(value)
-    } else if (value && typeof value === 'object') {
-      if (/media|entities|reply|forward|content|message|text|caption|raw/i.test(key)) {
-        result.push(...collectTextCandidates(value, depth + 1))
-      }
-    }
-  }
-  return result
-}
-
-// 原实现为整棵 JSON 建了一份全新的深拷贝（每个数组、每个对象都新建），
-// 导出大频道时相当于把已经很大的解析结果再翻一倍。这里改成原地过滤：
-// 数组用读写双指针就地压缩，对象直接删键，不产生第二棵树。
-// 同一趟里顺便统计保留下来的消息 ID，省掉外层「写完再读回来数一遍」的第二次解析。
-function filterTreeInPlace(node, contextKey, ctx) {
-  if (Array.isArray(node)) {
-    const trustedArray = isTrustedArrayKey(contextKey)
-    let write = 0
-    for (let read = 0; read < node.length; read += 1) {
-      const item = node[read]
-      if (looksLikeMessageObject(item, trustedArray)) {
-        if (ctx.matcher) {
-          const hit = ctx.matcher(collectTextCandidates(item).join('\n'))
-          if (hit) {
-            ctx.removed += 1
-            ctx.hitKeywords.add(hit)
-            continue
-          }
-        }
-        const id = messageIdOf(item)
-        if (id !== null) ctx.ids.add(id)
-      }
-      filterTreeInPlace(item, contextKey, ctx)
-      if (item === null || item === undefined) continue
-      node[write] = item
-      write += 1
-    }
-    node.length = write
-    return node
-  }
-
-  if (node && typeof node === 'object') {
-    for (const key of Object.keys(node)) {
-      const value = node[key]
-      if (value === null || value === undefined) {
-        delete node[key]
-        continue
-      }
-      filterTreeInPlace(value, key, ctx)
-    }
-    return node
-  }
-
-  return node
-}
-
-/**
- * 读一次、走一遍：完成关键词过滤并给出过滤后的消息条数。
- * 没有关键词规则时不写新文件，只统计条数。
- */
-function filterAndCount(sourceFile, targetFile, config) {
-  const matcher = createKeywordMatcher(config)
-  const hasKeywordRules = Boolean(matcher)
-  const json = readJsonSafe(sourceFile)
-  if (!json) return { file: sourceFile, removed: 0, hitKeywords: [], hasKeywordRules, count: 0 }
-
-  const ctx = { matcher, removed: 0, hitKeywords: new Set(), ids: new Set() }
-  filterTreeInPlace(json, '', ctx)
-
-  if (hasKeywordRules) writeJsonSafe(targetFile, json)
-  return {
-    file: hasKeywordRules ? targetFile : sourceFile,
-    removed: ctx.removed,
-    hitKeywords: Array.from(ctx.hitKeywords),
-    hasKeywordRules,
-    count: ctx.ids.size
-  }
-}
-
 function normalizeConfig(input) {
   const config = input || {}
   const baseOutputDir = config.baseOutputDir || process.cwd()
@@ -217,6 +74,14 @@ function normalizeConfig(input) {
     desc: Boolean(config.desc),
     continueOnError: config.continueOnError !== false,
     blockKeywordsText: String(config.blockKeywordsText || '').trim(),
+    forwardFilterEnabled: config.forwardFilterEnabled !== false,
+    filterKeywordsText: String(config.filterKeywordsText || '').trim(),
+    filterKeywordAction: config.filterKeywordAction || 'drop-message',
+    filterKeywordReplacement: String(config.filterKeywordReplacement || ''),
+    removeLinks: Boolean(config.removeLinks),
+    blockImages: Boolean(config.blockImages),
+    blockVideos: Boolean(config.blockVideos),
+    blockTextOnly: Boolean(config.blockTextOnly),
     keywordCaseSensitive: Boolean(config.keywordCaseSensitive),
     keywordRegexMode: Boolean(config.keywordRegexMode),
     fallbackToDefaultTopicOnMsgIdInvalid: config.fallbackToDefaultTopicOnMsgIdInvalid !== false,

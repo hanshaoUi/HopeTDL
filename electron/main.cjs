@@ -4,6 +4,8 @@ const fs = require('fs')
 const { spawn } = require('child_process')
 const { CommentForwardWorker } = require('./commentForwardWorker.cjs')
 const { extractMessageIds } = require('./shared/messageJson.cjs')
+const { filterAndCount, shouldSkipForward } = require('./shared/messageFilter.cjs')
+const jobSpecModule = import('../shared/jobSpec.mjs')
 
 const isDev = !app.isPackaged
 const devServerUrl = 'http://127.0.0.1:5174'
@@ -147,7 +149,17 @@ function defaultConfig() {
     chatCacheDays: 7,
     // Default export/download location is <project root>/output.
     defaultDownloadDir: defaultOutputDir(),
-    tdlPath: resolveTdlPath('tdl')
+    tdlPath: resolveTdlPath('tdl'),
+    forwardFilterEnabled: false,
+    filterKeywordsText: '',
+    filterKeywordAction: 'drop-message',
+    filterKeywordReplacement: '',
+    removeLinks: false,
+    blockImages: false,
+    blockVideos: false,
+    blockTextOnly: false,
+    keywordCaseSensitive: false,
+    keywordRegexMode: false
   }
 }
 
@@ -344,9 +356,43 @@ function buildGlobalArgs(config) {
 function runTdl(event, payload) {
   const config = readConfig()
   const tdlPath = resolveTdlPath(config.tdlPath || 'tdl')
-  const args = [...buildGlobalArgs(config), ...(payload.args || [])]
   const taskId = payload.taskId || `task_${Date.now()}`
+  const taskArgs = [...(payload.args || [])]
+  const cleanupFiles = [...(payload.cleanupFiles || [])]
+  let skipEmptyForward = false
+  if (taskArgs[0] === 'forward') {
+    const sourceIndex = taskArgs.findIndex(item => String(item) === '--from')
+    const sourceFile = sourceIndex >= 0 ? String(taskArgs[sourceIndex + 1] || '') : ''
+    if (sourceFile && fs.existsSync(sourceFile)) {
+      const filteredFile = path.join(app.getPath('temp'), 'HopeTDL', 'filtered', `${taskId}.json`)
+      const result = filterAndCount(sourceFile, filteredFile, config)
+      if (result.enabled) {
+        taskArgs[sourceIndex + 1] = result.file
+        cleanupFiles.push(result.file)
+        const typeCount = Object.values(result.removedByType || {}).reduce((sum, value) => sum + value, 0)
+        sendLog(event.sender, {
+          taskId,
+          level: 'info',
+          text: `[全局过滤] 删除消息 ${result.removed} 条（内容类型 ${typeCount} 条），移除链接 ${result.linksRemoved} 处，保留 ${result.count} 条。\n`
+        })
+        skipEmptyForward = shouldSkipForward(result)
+      }
+    }
+  }
+  const args = [...buildGlobalArgs(config), ...taskArgs]
   sendLog(event.sender, { taskId, level: 'info', text: `$ ${tdlPath} ${args.map(a => String(a).includes(' ') ? JSON.stringify(a) : a).join(' ')}\n` })
+
+  if (skipEmptyForward) {
+    sendLog(event.sender, { taskId, level: 'warning', text: '[全局过滤] 没有剩余消息，已安全跳过 tdl 转发。\n' })
+    setImmediate(() => {
+      flushAllLogBuffers()
+      if (!event.sender.isDestroyed()) event.sender.send('tdl:done', { taskId, code: 0, skipped: true })
+      for (const file of cleanupFiles) {
+        try { fs.rmSync(file, { force: true }) } catch {}
+      }
+    })
+    return { taskId, pid: null, args, skipped: true }
+  }
 
   // Ensure the parent directory of export/download output exists when -o is used.
   const outputIndex = args.findIndex(item => String(item) === '-o' || String(item) === '--output')
@@ -372,6 +418,9 @@ function runTdl(event, payload) {
     sendLog(event.sender, { taskId, level: 'error', text: `\n[启动失败] ${err.message}\n[建议] 打包后的 macOS App 可能找不到终端里的 tdl。请在设置里把 tdl 路径改成 /opt/homebrew/bin/tdl 或 /usr/local/bin/tdl；本版也会自动尝试这些路径。\n` })
     flushAllLogBuffers()
     if (!event.sender.isDestroyed()) event.sender.send('tdl:done', { taskId, code: -1 })
+    for (const file of cleanupFiles) {
+      try { fs.rmSync(file, { force: true }) } catch {}
+    }
   })
   child.on('close', code => {
     activeTdlChildren.delete(taskId)
@@ -379,6 +428,9 @@ function runTdl(event, payload) {
     // 任务结束时立即冲刷，保证 done 之前日志已经到齐。
     flushAllLogBuffers()
     if (!event.sender.isDestroyed()) event.sender.send('tdl:done', { taskId, code })
+    for (const file of cleanupFiles) {
+      try { fs.rmSync(file, { force: true }) } catch {}
+    }
   })
   return { taskId, pid: child.pid, args }
 }
@@ -636,6 +688,7 @@ function startCommentForward(event, payload = {}) {
   const config = readConfig()
   const taskId = payload.taskId || `comment_forward_${Date.now()}`
   const worker = new CommentForwardWorker({
+    ...config,
     ...payload,
     taskId,
     tdlPath: resolveTdlPath(payload.tdlPath || config.tdlPath || 'tdl'),
@@ -666,6 +719,16 @@ function startCommentForward(event, payload = {}) {
 
   worker.start()
   return { ok: true, taskId, workDir: worker.paths.root, message: '评论区顺序转发任务已开始' }
+}
+
+async function runJob(event, payload = {}) {
+  const taskId = payload.taskId || `${payload.spec?.kind || 'job'}_${Date.now()}`
+  const { executionForSpec } = await jobSpecModule
+  const execution = executionForSpec(payload.spec)
+  if (execution.kind === 'comment-forward') {
+    return startCommentForward(event, { ...execution.payload, taskId })
+  }
+  return runTdl(event, { taskId, args: execution.args })
 }
 
 function stopCommentForward() {
@@ -750,6 +813,7 @@ async function checkEnvironment() {
 ipcMain.handle('config:get', () => readConfig())
 ipcMain.handle('config:set', (_, config) => saveConfig(config))
 ipcMain.handle('tdl:run', (event, payload) => runTdl(event, payload))
+ipcMain.handle('job:run', (event, payload) => runJob(event, payload))
 ipcMain.handle('tdl:stop', (_, taskId) => stopTdlTask(taskId))
 ipcMain.handle('environment:check', () => checkEnvironment())
 ipcMain.handle('comment-forward:start', (event, payload) => startCommentForward(event, payload))

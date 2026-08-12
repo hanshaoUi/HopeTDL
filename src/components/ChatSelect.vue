@@ -37,6 +37,7 @@ const recentKeys = computed(() => {
 const loading = computed(() => appState.chatCacheLoading)
 
 async function loadChats(force = false) {
+  if (!window.tdlApi) return
   // 已经有缓存就不再往主进程要一遍整份列表：
   // 原来每次下拉展开和聚焦都会走一次 IPC，把上千条对话重新序列化传一遍。
   if (!force && chats.value.length) return
