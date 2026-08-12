@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { appState } from '../state'
 import { commandText, runTask } from '../utils'
 import { message } from '../ui/naive'
@@ -34,6 +34,13 @@ async function checkEnvironment() {
 function startLogin() {
   runTask('login', loginArgs.value, `登录：${loginType.value}`)
 }
+
+// 最近一次登录任务成功后重新检查环境，让上面的状态跟着变，
+// 不用用户自己再点一次「重新检查」。
+const lastLoginState = computed(() => appState.tasks.find(task => task.type === 'login')?.state)
+watch(lastLoginState, (state, previous) => {
+  if (state === 'success' && state !== previous) checkEnvironment()
+})
 
 function goto(view, kind) {
   if (kind) appState.newTaskKind = kind

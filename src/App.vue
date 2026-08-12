@@ -102,6 +102,9 @@ onMounted(async () => {
   offDone = tdlApi.onDone((data) => {
     // 把该任务残留的未换行输出落成历史行，避免进度条最后一帧永远挂着。
     finalizeLogs(data.taskId)
+    // 二维码是这个任务打印的，任务一结束它就失效了（登录成功、超时、或出错），
+    // 不该继续挂在界面上。
+    if (appState.loginQr?.taskId === data.taskId) appState.loginQr = null
     const existing = appState.tasks.find(t => t.id === data.taskId)
     if (existing?.state === TASK_STATE.STOPPED) {
       updateTaskStatus(data.taskId, TASK_STATE.STOPPED, { exitCode: data.code })
