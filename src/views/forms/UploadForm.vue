@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed } from 'vue'
 import { commandText, runTask } from '../../utils'
 import CommandPreview from '../../components/CommandPreview.vue'
 import ChatSelect from '../../components/ChatSelect.vue'
@@ -7,6 +7,7 @@ import { appState } from '../../state.js'
 import { message } from '../../ui/naive'
 import { findChatByValue } from '../../chatCache'
 import { saveUploadRecord, touchRecentChat } from '../../historyStore'
+import { useAppliedRecord, useSelectedChat } from '../../useAppliedRecord'
 const path = ref('')
 const chat = ref('')
 const topic = ref('')
@@ -59,24 +60,21 @@ const args = computed(() => {
   if (remove.value) a.push('--rm')
   return a
 })
-onMounted(() => {
-  if (appState && appState.selectedUploadRecord) {
-    const record = appState.selectedUploadRecord
-    path.value = record.path || ''
-    chat.value = record.chat || ''
-    topic.value = record.topic || ''
-    caption.value = record.caption || ''
-    photo.value = record.photo ?? false
-    remove.value = record.remove ?? false
-    selectedTargetChat.value = findChatByValue(chat.value, appState.cachedChats || [])
-    appState.selectedUploadRecord = null
-  } else if (appState && appState.selectedChat) {
-    const row = appState.selectedChat
-    selectedTargetChat.value = row
-    touchRecentChat(row)
-    const id = row.id || row.dialog_id || row.dialogID || ''
-    chat.value = String(id || row.username || '')
-  }
+function applyRecord(record) {
+  path.value = record.path || ''
+  chat.value = record.chat || ''
+  topic.value = record.topic || ''
+  caption.value = record.caption || ''
+  photo.value = record.photo ?? false
+  remove.value = record.remove ?? false
+  selectedTargetChat.value = findChatByValue(chat.value, appState.cachedChats || [])
+}
+
+useAppliedRecord('selectedUploadRecord', applyRecord)
+useSelectedChat(row => {
+  selectedTargetChat.value = row
+  touchRecentChat(row)
+  chat.value = String(row.id || row.dialog_id || row.dialogID || row.username || '')
 })
 
 function run() {

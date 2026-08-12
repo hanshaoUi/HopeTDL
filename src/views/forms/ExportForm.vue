@@ -7,6 +7,7 @@ import ChatSelect from '../../components/ChatSelect.vue'
 import { appState } from '../../state.js'
 import { chatId as getChatId, chatTitle as getChatTitle, findChatByValue } from '../../chatCache'
 import { readJson, touchRecentChat, writeJson } from '../../historyStore'
+import { useAppliedRecord } from '../../useAppliedRecord'
 
 const chat = ref('')
 const type = ref('id')
@@ -295,13 +296,15 @@ async function pickOutput() {
 }
 
 // 如果从对话列表中点击“导出”，自动填充源聊天 ID，并尝试匹配该聊天历史记录
+useAppliedRecord('selectedExportRecord', record => {
+  loadMemory()
+  applyRecord(record, 'all')
+})
+
 onMounted(async () => {
   loadMemory()
 
-  if (appState && appState.selectedExportRecord) {
-    applyRecord(appState.selectedExportRecord, 'all')
-    appState.selectedExportRecord = null
-  } else if (appState && appState.selectedChat) {
+  if (appState && appState.selectedChat) {
     const row = appState.selectedChat
     const id = row.id || row.dialog_id || row.dialogID || ''
     chat.value = String(id)

@@ -67,6 +67,7 @@ export const appState = reactive({
   selectedForwardRecord: null,
   selectedUploadRecord: null,
   selectedDownloadRecord: null,
+  selectedCommentForwardRecord: null,
   /**
    * 是否显示任务日志面板。当为 false 时隐藏日志面板，并在界面底部提供按钮重新展开。
    */

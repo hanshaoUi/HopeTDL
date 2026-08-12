@@ -7,6 +7,7 @@ import { appState } from '../../state.js'
 import { message, confirmHtml } from '../../ui/naive'
 import { chatId, chatTitle, findChatByValue } from '../../chatCache'
 import { saveForwardRecord, touchRecentChat } from '../../historyStore'
+import { useAppliedRecord, useSelectedChat } from '../../useAppliedRecord'
 const sourceType = ref('file')
 const from = ref('')
 const peer = ref('')
@@ -57,28 +58,28 @@ async function pickFile() {
 }
 
 // 如果从对话列表中点击“转发”，自动填充目标
+function applyRecord(record) {
+  sourceType.value = record.sourceType || 'file'
+  from.value = record.from || ''
+  peer.value = record.peer || record.to || ''
+  thread.value = record.thread || ''
+  mode.value = record.mode || 'clone'
+  dryRun.value = record.dryRun ?? true
+  silent.value = record.silent ?? false
+  single.value = record.single ?? false
+  desc.value = record.desc ?? false
+  edit.value = record.edit || ''
+  selectedTargetChat.value = findChatByValue(peer.value, appState.cachedChats || [])
+}
+
+useAppliedRecord('selectedForwardRecord', applyRecord)
+useSelectedChat(row => {
+  selectedTargetChat.value = row
+  touchRecentChat(row)
+  peer.value = String(row.id || row.dialog_id || row.dialogID || row.username || '')
+})
+
 onMounted(async () => {
-  if (appState && appState.selectedForwardRecord) {
-    const record = appState.selectedForwardRecord
-    sourceType.value = record.sourceType || 'file'
-    from.value = record.from || ''
-    peer.value = record.peer || record.to || ''
-    thread.value = record.thread || ''
-    mode.value = record.mode || 'clone'
-    dryRun.value = record.dryRun ?? true
-    silent.value = record.silent ?? false
-    single.value = record.single ?? false
-    desc.value = record.desc ?? false
-    edit.value = record.edit || ''
-    selectedTargetChat.value = findChatByValue(peer.value, appState.cachedChats || [])
-    appState.selectedForwardRecord = null
-  } else if (appState && appState.selectedChat) {
-    const row = appState.selectedChat
-    selectedTargetChat.value = row
-    touchRecentChat(row)
-    const id = row.id || row.dialog_id || row.dialogID || ''
-    peer.value = String(id || row.username || '')
-  }
   if (!from.value && sourceType.value === 'file') from.value = await defaultJsonFile()
 })
 const toValue = computed(() => thread.value ? `{ Peer: "${peer.value}", Thread: ${thread.value} }` : peer.value)

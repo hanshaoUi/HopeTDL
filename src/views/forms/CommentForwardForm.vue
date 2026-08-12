@@ -6,7 +6,8 @@ import CommandPreview from '../../components/CommandPreview.vue'
 import { appState } from '../../state.js'
 import { commandText, createTask, updateTaskStatus } from '../../utils'
 import { chatId, chatTitle, findChatByValue } from '../../chatCache'
-import { touchRecentChat } from '../../historyStore'
+import { getCommentForwardRecords, saveCommentForwardRecord, touchRecentChat } from '../../historyStore'
+import { useAppliedRecord, useSelectedChat } from '../../useAppliedRecord'
 
 const sourceChat = ref('')
 const targetChat = ref('')
@@ -30,6 +31,7 @@ const keywordCaseSensitive = ref(false)
 const keywordRegexMode = ref(false)
 const skipCommentsWhenPostBlocked = ref(true)
 const advancedMode = ref(false)
+const recentRecords = ref([])
 let offProgress = null
 let offStatus = null
 
@@ -99,6 +101,68 @@ function handleTargetSelect(row) {
     targetTopicId.value = ''
   }
 }
+
+function makeRecord() {
+  return {
+    sourceChat: sourceChat.value,
+    targetChat: targetChat.value,
+    targetTopicId: targetTopicId.value,
+    startId: startId.value,
+    endId: endId.value,
+    mode: mode.value,
+    delayMs: delayMs.value,
+    workDir: workDir.value,
+    includeComments: includeComments.value,
+    forwardMain: forwardMain.value,
+    forwardComments: forwardComments.value,
+    exportOnly: exportOnly.value,
+    dryRun: dryRun.value,
+    resume: resume.value,
+    skipExistingExport: skipExistingExport.value,
+    desc: desc.value,
+    continueOnError: continueOnError.value,
+    blockKeywordsText: blockKeywordsText.value,
+    keywordCaseSensitive: keywordCaseSensitive.value,
+    keywordRegexMode: keywordRegexMode.value,
+    skipCommentsWhenPostBlocked: skipCommentsWhenPostBlocked.value,
+    command: previewCommand.value,
+    time: new Date().toLocaleString()
+  }
+}
+
+function applyRecord(record) {
+  sourceChat.value = record.sourceChat || ''
+  targetChat.value = record.targetChat || ''
+  targetTopicId.value = record.targetTopicId || ''
+  startId.value = record.startId || ''
+  endId.value = record.endId || ''
+  mode.value = record.mode || 'direct'
+  delayMs.value = Number(record.delayMs ?? 1500)
+  workDir.value = record.workDir || ''
+  includeComments.value = record.includeComments !== false
+  forwardMain.value = record.forwardMain !== false
+  forwardComments.value = record.forwardComments !== false
+  exportOnly.value = !!record.exportOnly
+  // 演练默认保持开启：套用历史不应该让一次误点直接真发。
+  dryRun.value = record.dryRun ?? true
+  resume.value = !!record.resume
+  skipExistingExport.value = !!record.skipExistingExport
+  desc.value = !!record.desc
+  continueOnError.value = record.continueOnError !== false
+  blockKeywordsText.value = record.blockKeywordsText || ''
+  keywordCaseSensitive.value = !!record.keywordCaseSensitive
+  keywordRegexMode.value = !!record.keywordRegexMode
+  skipCommentsWhenPostBlocked.value = record.skipCommentsWhenPostBlocked !== false
+  selectedSourceChat.value = findChatByValue(sourceChat.value, appState.cachedChats || [])
+  selectedTargetChat.value = findChatByValue(targetChat.value, appState.cachedChats || [])
+  if (record.blockKeywordsText || record.workDir || record.resume) advancedMode.value = true
+}
+
+function loadHistory() {
+  recentRecords.value = getCommentForwardRecords().slice(0, 6)
+}
+
+useAppliedRecord('selectedCommentForwardRecord', applyRecord)
 
 function buildPayload() {
   return {
@@ -209,6 +273,8 @@ async function startTask() {
     return
   }
   currentWorkDir.value = result.workDir || ''
+  saveCommentForwardRecord({ ...makeRecord(), workDir: result.workDir || workDir.value })
+  loadHistory()
   await loadProgressSummary(currentWorkDir.value)
   message.success(result.message || '任务已开始')
 }
@@ -223,14 +289,14 @@ function fillDemoKeywords() {
   blockKeywordsText.value = ['广告', '推广', '返佣', '二维码'].join('\n')
 }
 
+useSelectedChat(row => {
+  selectedSourceChat.value = row
+  sourceChat.value = String(row.id || row.dialog_id || row.dialogID || row.username || '')
+  touchRecentChat(row)
+})
+
 onMounted(() => {
-  if (appState.selectedChat) {
-    const row = appState.selectedChat
-    selectedSourceChat.value = row
-    const id = row.id || row.dialog_id || row.dialogID || ''
-    sourceChat.value = String(id || row.username || '')
-    touchRecentChat(row)
-  }
+  loadHistory()
 
   // 没有 tdlApi 时（浏览器预览）直接跳过订阅，否则整个页面挂掉。
   if (!window.tdlApi) return
@@ -403,6 +469,30 @@ onUnmounted(() => {
       :title="`失败消息 ID：${progressSummary.failedIds.join(', ')}`"
     />
     <div v-else class="empty-cell">当前没有失败记录</div>
+  </div>
+
+  <div class="card" v-if="recentRecords.length">
+    <div class="card-title">最近的评论区转发</div>
+    <div class="mini-muted" style="margin-bottom:10px">套用会恢复全部参数，但演练模式一律重新打开，避免误发。</div>
+    <ul class="chat-list">
+      <li v-for="row in recentRecords" :key="row.id" class="chat-card">
+        <div class="chat-main">
+          <div class="chat-line">
+            <span class="chat-name">{{ row.sourceChat }} → {{ row.targetChat || '未填目标' }}</span>
+            <span v-if="row.targetTopicId" class="chat-topics">话题 {{ row.targetTopicId }}</span>
+          </div>
+          <div class="chat-line chat-sub">
+            <span>{{ row.time }}</span>
+            <span class="chat-stat">范围 {{ row.startId || '起' }} - {{ row.endId || '止' }}</span>
+            <span v-if="row.blockKeywordsText" class="chat-stat">有关键词规则</span>
+            <span v-if="row.exportOnly" class="chat-stat">仅导出</span>
+          </div>
+        </div>
+        <div class="chat-actions">
+          <n-button size="small" type="primary" secondary @click="applyRecord(row)">套用</n-button>
+        </div>
+      </li>
+    </ul>
   </div>
 
   <div class="card" v-if="advancedMode">

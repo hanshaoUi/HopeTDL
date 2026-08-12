@@ -6,6 +6,7 @@ import CommandPreview from '../../components/CommandPreview.vue'
 import ChatSelect from '../../components/ChatSelect.vue'
 import { appState } from '../../state.js'
 import { getDownloadRecords, saveDownloadRecord } from '../../historyStore'
+import { useAppliedRecord } from '../../useAppliedRecord'
 
 const sourceType = ref('url')
 const urlsText = ref('')
@@ -214,11 +215,9 @@ async function run() {
   await runTask('download', downloadArgs, '下载评论区媒体')
 }
 
+useAppliedRecord('selectedDownloadRecord', applyRecord)
+
 onMounted(async () => {
-  if (appState?.selectedDownloadRecord) {
-    applyRecord(appState.selectedDownloadRecord)
-    appState.selectedDownloadRecord = null
-  }
   loadHistory()
   if (!dir.value) {
     dir.value = appState.config?.defaultDownloadDir || await window.tdlApi.getDefaultOutputDir()

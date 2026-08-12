@@ -5,6 +5,7 @@ export const EXPORT_MEMORY_KEY = 'hopetdl.export.memory.v1'
 export const FORWARD_HISTORY_KEY = 'hopetdl.forward.history.v1'
 export const UPLOAD_HISTORY_KEY = 'hopetdl.upload.history.v1'
 export const DOWNLOAD_HISTORY_KEY = 'hopetdl.download.history.v1'
+export const COMMENT_FORWARD_HISTORY_KEY = 'hopetdl.commentforward.history.v1'
 export const CHAT_PREFS_KEY = 'hopetdl.chat.prefs.v1'
 
 export function nsKey() {
@@ -139,6 +140,16 @@ export function getUploadRecords(ns = nsKey()) {
 
 export function saveUploadRecord(record, ns = nsKey()) {
   return saveScopedRecord(UPLOAD_HISTORY_KEY, { type: 'upload', ...record }, ns)
+}
+
+// 评论区顺序转发的参数最多（二十来个开关），却是原来唯一不留历史的任务，
+// 每次都得从头重填。
+export function getCommentForwardRecords(ns = nsKey()) {
+  return getScopedHistory(COMMENT_FORWARD_HISTORY_KEY, ns).records || []
+}
+
+export function saveCommentForwardRecord(record, ns = nsKey()) {
+  return saveScopedRecord(COMMENT_FORWARD_HISTORY_KEY, { type: 'comment-forward', ...record }, ns)
 }
 
 export function getDownloadRecords(ns = nsKey()) {
