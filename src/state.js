@@ -45,6 +45,9 @@ export const appState = reactive({
   // 增量维护，避免每来一行就全量 filter 一遍日志数组。
   logErrorCount: 0,
   logVersion: 0,
+  // tdl 登录时用半块字符画的二维码，从日志流里单独抽出来整块渲染。
+  // 混在日志里会被换行和行高毁掉，扫不出来。
+  loginQr: null,
   tasks: readStoredTasks(),
   schedules: readStoredSchedules(),
   schedulerPaused: false,

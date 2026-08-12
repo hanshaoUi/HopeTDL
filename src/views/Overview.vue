@@ -110,6 +110,37 @@ onMounted(checkEnvironment)
       <n-button size="small" type="primary" @click="startLogin">开始登录</n-button>
       <code class="inline-command">{{ commandText(loginArgs) }}</code>
     </div>
+
+    <!-- 验证码方式需要往 tdl 进程的 stdin 里输手机号和验证码，
+         而主进程根本没接 stdin，界面上没有任何地方能输入 —— 会一直卡住。 -->
+    <n-alert
+      v-if="loginType === 'code'"
+      type="warning"
+      :show-icon="true"
+      :closable="false"
+      style="margin-top:12px"
+      title="验证码登录目前只能在终端里做：应用还没有把输入通道接到 tdl 进程，点了会一直等待。建议用二维码。"
+    />
+    <n-alert
+      v-else-if="loginType === 'desktop'"
+      type="info"
+      :show-icon="true"
+      :closable="false"
+      style="margin-top:12px"
+      title="Desktop 导入读取 Telegram Desktop（Qt 版）的 tdata 目录。你装的是 Telegram for macOS，没有 tdata，这个方式用不了。"
+    />
+  </section>
+
+  <!-- 二维码必须整块、等宽、1 倍行高渲染才扫得出来。 -->
+  <section v-if="appState.loginQr" class="card qr-card">
+    <div class="card-head">
+      <div>
+        <div class="card-title">扫码登录</div>
+        <div class="mini-muted">用手机 Telegram：设置 → 设备 → 关联桌面设备，扫下面的码。二维码会定期刷新。</div>
+      </div>
+      <n-button size="small" quaternary @click="appState.loginQr = null">关闭</n-button>
+    </div>
+    <pre class="qr-block">{{ appState.loginQr.lines.join('\n') }}</pre>
   </section>
 
   <section class="card">

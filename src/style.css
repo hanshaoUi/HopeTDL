@@ -724,3 +724,26 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter,
   .chat-card { flex-wrap: wrap; }
   .chat-actions { width: 100%; padding-left: 29px; }
 }
+
+/* 二维码登录：tdl 用半块字符（█▄▀）画码，必须整块渲染。
+   line-height 必须是 1，否则上下半块之间出现缝隙，图案纵向拉长，扫不出来；
+   white-space 必须是 pre 且不换行，69 列一旦折行图案就废了。 */
+.qr-card { display: flex; flex-direction: column; align-items: flex-start; }
+.qr-block {
+  margin: 4px 0 0;
+  padding: 16px;
+  background: #fff;
+  color: #000;
+  border-radius: 10px;
+  font-family: Menlo, "SF Mono", ui-monospace, monospace;
+  font-size: 15px;
+  /* line-height 必须正好是 1：大于 1 会在 █ 的行与行之间留出缝隙，图案就断了。
+     代价是模块偏扁（字符格 0.6em 宽、两个半块共用 1em 高 → 宽高比约 1.2），
+     这点各向异性远小于手持拍摄的透视畸变，扫描器可以容忍，所以不去纠正它。 */
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: pre;
+  overflow-x: auto;
+  max-width: 100%;
+  align-self: center;
+}
