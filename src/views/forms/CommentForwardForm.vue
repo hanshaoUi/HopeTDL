@@ -1,12 +1,13 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { message, confirmHtml } from '../ui/naive'
-import ChatSelect from '../components/ChatSelect.vue'
-import CommandPreview from '../components/CommandPreview.vue'
-import { appState } from '../state.js'
-import { commandText, createTask, updateTaskStatus } from '../utils'
-import { chatId, chatTitle, findChatByValue } from '../chatCache'
-import { touchRecentChat } from '../historyStore'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { message, confirmHtml } from '../../ui/naive'
+import ChatSelect from '../../components/ChatSelect.vue'
+import CommandPreview from '../../components/CommandPreview.vue'
+import { appState } from '../../state.js'
+import { commandTextForSpec, defaultOutputDir, runJob, updateTaskStatus } from '../../utils'
+import { chatId, chatTitle, findChatByValue } from '../../chatCache'
+import { getCommentForwardRecords, saveCommentForwardRecord, touchRecentChat } from '../../historyStore'
+import { useAppliedRecord, useSelectedChat } from '../../useAppliedRecord'
 
 const sourceChat = ref('')
 const targetChat = ref('')
@@ -30,6 +31,9 @@ const keywordCaseSensitive = ref(false)
 const keywordRegexMode = ref(false)
 const skipCommentsWhenPostBlocked = ref(true)
 const advancedMode = ref(false)
+const recentRecords = ref([])
+let offProgress = null
+let offStatus = null
 
 const selectedSourceChat = ref(null)
 const selectedTargetChat = ref(null)
@@ -70,11 +74,11 @@ const previewCommand = computed(() => {
   const range = startId.value || endId.value ? `${startId.value || 0},${endId.value || '9223372036854775807'}` : '全部'
   const lines = [
     `# 任务队列，不是一条 tdl 命令`,
-    commandText(['chat', 'export', '-c', sourceChat.value || '<源聊天>', ...(range === '全部' ? [] : ['-T', 'id', '-i', range]), '--all', '--with-content', '-o', '<workDir>/posts.json']),
+    commandTextForSpec({ kind: 'export', chat: sourceChat.value || '<源聊天>', selector: range === '全部' ? null : { type: 'id', input: range }, all: true, withContent: true, output: '<workDir>/posts.json' }),
     `# 然后循环每个消息 ID：`,
-    commandText(['chat', 'export', '-c', sourceChat.value || '<源聊天>', '-T', 'id', '-i', '<id>,<id>', '--all', '--with-content', '-o', '<workDir>/queue/post_<id>.json']),
-    includeComments.value ? commandText(['chat', 'export', '-c', sourceChat.value || '<源聊天>', '--reply', '<id>', '--all', '--with-content', '-o', '<workDir>/comments/comments_<id>.json']) : '# 未启用评论区处理',
-    exportOnly.value ? '# 仅导出，不转发' : commandText(['forward', '--from', '<filtered json>', '--to', targetTopicId.value ? '<workDir>/target_router.txt' : (targetChat.value || '<目标聊天>'), '--mode', mode.value])
+    commandTextForSpec({ kind: 'export', chat: sourceChat.value || '<源聊天>', selector: { type: 'id', input: '<id>,<id>' }, all: true, withContent: true, output: '<workDir>/queue/post_<id>.json' }),
+    includeComments.value ? commandTextForSpec({ kind: 'export', chat: sourceChat.value || '<源聊天>', reply: '<id>', all: true, withContent: true, output: '<workDir>/comments/comments_<id>.json' }) : '# 未启用评论区处理',
+    exportOnly.value ? '# 仅导出，不转发' : commandTextForSpec({ kind: 'forward', from: '<filtered json>', target: targetTopicId.value ? { routerFile: '<workDir>/target_router.txt' } : { peer: targetChat.value || '<目标聊天>' }, mode: mode.value })
   ]
   return lines.join('\n')
 })
@@ -98,9 +102,70 @@ function handleTargetSelect(row) {
   }
 }
 
-function buildPayload() {
+function makeRecord() {
   return {
-    taskId: currentTaskId.value,
+    sourceChat: sourceChat.value,
+    targetChat: targetChat.value,
+    targetTopicId: targetTopicId.value,
+    startId: startId.value,
+    endId: endId.value,
+    mode: mode.value,
+    delayMs: delayMs.value,
+    workDir: workDir.value,
+    includeComments: includeComments.value,
+    forwardMain: forwardMain.value,
+    forwardComments: forwardComments.value,
+    exportOnly: exportOnly.value,
+    dryRun: dryRun.value,
+    resume: resume.value,
+    skipExistingExport: skipExistingExport.value,
+    desc: desc.value,
+    continueOnError: continueOnError.value,
+    blockKeywordsText: blockKeywordsText.value,
+    keywordCaseSensitive: keywordCaseSensitive.value,
+    keywordRegexMode: keywordRegexMode.value,
+    skipCommentsWhenPostBlocked: skipCommentsWhenPostBlocked.value,
+    command: previewCommand.value,
+    time: new Date().toLocaleString()
+  }
+}
+
+function applyRecord(record) {
+  sourceChat.value = record.sourceChat || ''
+  targetChat.value = record.targetChat || ''
+  targetTopicId.value = record.targetTopicId || ''
+  startId.value = record.startId || ''
+  endId.value = record.endId || ''
+  mode.value = record.mode || 'direct'
+  delayMs.value = Number(record.delayMs ?? 1500)
+  workDir.value = record.workDir || ''
+  includeComments.value = record.includeComments !== false
+  forwardMain.value = record.forwardMain !== false
+  forwardComments.value = record.forwardComments !== false
+  exportOnly.value = !!record.exportOnly
+  // 演练默认保持开启：套用历史不应该让一次误点直接真发。
+  dryRun.value = record.dryRun ?? true
+  resume.value = !!record.resume
+  skipExistingExport.value = !!record.skipExistingExport
+  desc.value = !!record.desc
+  continueOnError.value = record.continueOnError !== false
+  blockKeywordsText.value = record.blockKeywordsText || ''
+  keywordCaseSensitive.value = !!record.keywordCaseSensitive
+  keywordRegexMode.value = !!record.keywordRegexMode
+  skipCommentsWhenPostBlocked.value = record.skipCommentsWhenPostBlocked !== false
+  selectedSourceChat.value = findChatByValue(sourceChat.value, appState.cachedChats || [])
+  selectedTargetChat.value = findChatByValue(targetChat.value, appState.cachedChats || [])
+  if (record.blockKeywordsText || record.workDir || record.resume) advancedMode.value = true
+}
+
+function loadHistory() {
+  recentRecords.value = getCommentForwardRecords().slice(0, 6)
+}
+
+useAppliedRecord('selectedCommentForwardRecord', applyRecord)
+
+const spec = computed(() => ({
+    kind: 'comment-forward',
     sourceChat: sourceChat.value,
     targetChat: targetChat.value,
     targetTopicId: targetTopicId.value ? Number(targetTopicId.value) : null,
@@ -122,11 +187,10 @@ function buildPayload() {
     keywordCaseSensitive: keywordCaseSensitive.value,
     keywordRegexMode: keywordRegexMode.value,
     skipCommentsWhenPostBlocked: skipCommentsWhenPostBlocked.value
-  }
-}
+}))
 
 async function pickWorkDir() {
-  const dir = await window.tdlApi.openDirectory({ defaultPath: workDir.value || appState.config?.defaultDownloadDir || await window.tdlApi.getDefaultOutputDir() })
+  const dir = await window.tdlApi.openDirectory({ defaultPath: workDir.value || await defaultOutputDir() })
   if (dir) workDir.value = dir
 }
 
@@ -191,15 +255,13 @@ async function startTask() {
   currentTaskId.value = taskId
   status.value = 'running'
   progress.value = { current: 0, total: 0, id: '', stage: '' }
-  createTask('comment-forward', [], '评论区顺序转发', {
+  const result = await runJob(spec.value, '评论区顺序转发', {
     id: taskId,
     command: previewCommand.value,
     sourceChat: sourceChat.value,
     targetChat: targetChat.value,
     dryRun: dryRun.value
   })
-
-  const result = await window.tdlApi.startCommentForward(buildPayload())
   if (!result?.ok) {
     status.value = 'error'
     updateTaskStatus(taskId, '失败', { errorMessage: result?.message || '任务启动失败' })
@@ -207,6 +269,8 @@ async function startTask() {
     return
   }
   currentWorkDir.value = result.workDir || ''
+  saveCommentForwardRecord({ ...makeRecord(), workDir: result.workDir || workDir.value })
+  loadHistory()
   await loadProgressSummary(currentWorkDir.value)
   message.success(result.message || '任务已开始')
 }
@@ -221,20 +285,23 @@ function fillDemoKeywords() {
   blockKeywordsText.value = ['广告', '推广', '返佣', '二维码'].join('\n')
 }
 
-onMounted(() => {
-  if (appState.selectedChat) {
-    const row = appState.selectedChat
-    selectedSourceChat.value = row
-    const id = row.id || row.dialog_id || row.dialogID || ''
-    sourceChat.value = String(id || row.username || '')
-    touchRecentChat(row)
-  }
+useSelectedChat(row => {
+  selectedSourceChat.value = row
+  sourceChat.value = String(row.id || row.dialog_id || row.dialogID || row.username || '')
+  touchRecentChat(row)
+})
 
-  window.tdlApi.onCommentForwardProgress(data => {
+onMounted(() => {
+  loadHistory()
+
+  // 没有 tdlApi 时（浏览器预览）直接跳过订阅，否则整个页面挂掉。
+  if (!window.tdlApi) return
+
+  offProgress = window.tdlApi.onCommentForwardProgress(data => {
     if (currentTaskId.value && data.taskId !== currentTaskId.value) return
     progress.value = { ...progress.value, ...data }
   })
-  window.tdlApi.onCommentForwardStatus(data => {
+  offStatus = window.tdlApi.onCommentForwardStatus(data => {
     if (currentTaskId.value && data.taskId !== currentTaskId.value) return
     status.value = data.status || status.value
     if (data.workDir) currentWorkDir.value = data.workDir
@@ -243,11 +310,15 @@ onMounted(() => {
     }
   })
 })
+
+// 原来这两个订阅从不注销，页面每次重建都会多挂一份监听。
+onUnmounted(() => {
+  if (offProgress) offProgress()
+  if (offStatus) offStatus()
+})
 </script>
 
 <template>
-  <h1 class="page-title">评论区顺序转发</h1>
-  <p class="page-desc">把频道主消息和每条消息下的评论区按顺序导出 / 转发：主消息 1 → 评论区 1 → 主消息 2 → 评论区 2。</p>
 
   <div class="card">
     <div class="comment-forward-head">
@@ -278,7 +349,7 @@ onMounted(() => {
       </div>
 
       <div class="grid-2">
-        <n-form-item label="目标 Peer">
+        <n-form-item label="目标对话">
           <ChatSelect
             v-model="targetChat"
             placeholder="从对话列表选择目标，或手动输入 @target / ID"
@@ -286,7 +357,7 @@ onMounted(() => {
             @select="handleTargetSelect"
           />
         </n-form-item>
-        <n-form-item label="目标话题 ID">
+        <n-form-item label="目标话题">
           <n-select
             v-if="targetTopics.length"
             v-model:value="targetTopicId"
@@ -309,7 +380,7 @@ onMounted(() => {
             <n-radio-button value="clone">clone</n-radio-button>
           </n-radio-group>
         </n-form-item>
-        <n-form-item label="每条间隔 ms">
+        <n-form-item label="每条间隔">
           <n-input-number v-model:value="delayMs" :min="0" :max="60000" :step="500" />
         </n-form-item>
       </div>
@@ -394,6 +465,30 @@ onMounted(() => {
       :title="`失败消息 ID：${progressSummary.failedIds.join(', ')}`"
     />
     <div v-else class="empty-cell">当前没有失败记录</div>
+  </div>
+
+  <div class="card" v-if="recentRecords.length">
+    <div class="card-title">最近的评论区转发</div>
+    <div class="mini-muted" style="margin-bottom:10px">套用会恢复全部参数，但演练模式一律重新打开，避免误发。</div>
+    <ul class="chat-list">
+      <li v-for="row in recentRecords" :key="row.id" class="chat-card">
+        <div class="chat-main">
+          <div class="chat-line">
+            <span class="chat-name">{{ row.sourceChat }} → {{ row.targetChat || '未填目标' }}</span>
+            <span v-if="row.targetTopicId" class="chat-topics">话题 {{ row.targetTopicId }}</span>
+          </div>
+          <div class="chat-line chat-sub">
+            <span>{{ row.time }}</span>
+            <span class="chat-stat">范围 {{ row.startId || '起' }} - {{ row.endId || '止' }}</span>
+            <span v-if="row.blockKeywordsText" class="chat-stat">有关键词规则</span>
+            <span v-if="row.exportOnly" class="chat-stat">仅导出</span>
+          </div>
+        </div>
+        <div class="chat-actions">
+          <n-button size="small" type="primary" secondary @click="applyRecord(row)">套用</n-button>
+        </div>
+      </li>
+    </ul>
   </div>
 
   <div class="card" v-if="advancedMode">

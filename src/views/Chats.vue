@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { message } from '../ui/naive'
-import { commandText, runTask } from '../utils'
+import { commandTextForSpec, runJob } from '../utils'
 import CommandPreview from '../components/CommandPreview.vue'
 import { appState } from '../state.js'
 import { loadChatCache, chatId, chatTitle, chatUsername, chatType, chatTopics } from '../chatCache'
@@ -13,12 +13,14 @@ const search = ref('')
 const chats = ref([])
 const loading = ref(false)
 const isFilteredLiveResult = ref(false)
+// 过滤表达式和 table 输出是低频的高级用法，默认收起，不占主界面。
+const showAdvanced = ref(false)
 
-const args = computed(() => {
-  const a = ['chat', 'ls', '-o', output.value === 'table' ? 'table' : 'json']
-  if (filter.value) a.push('--filter', filter.value)
-  return a
-})
+const spec = computed(() => ({
+  kind: 'chat-list',
+  output: output.value === 'table' ? 'table' : 'json',
+  filter: filter.value
+}))
 
 const cacheMetaText = computed(() => {
   const meta = appState.chatCacheMeta || {}
@@ -59,9 +61,18 @@ function typeTagColor(type) {
 
 function copyId(id) { copyToClipboard(id) }
 function copyUsername(username) { if (username) copyToClipboard(username) }
-function selectForExport(row) { touchRecentChat(row); appState.selectedChat = row; appState.activeView = 'export' }
-function selectForForward(row) { touchRecentChat(row); appState.selectedChat = row; appState.activeView = 'forward' }
-function selectForUpload(row) { touchRecentChat(row); appState.selectedChat = row; appState.activeView = 'upload' }
+// 对话列表是发起操作的入口：选中对话后带着它跳到「新建任务」的对应类型。
+function startTask(row, kind) {
+  touchRecentChat(row)
+  appState.selectedChat = row
+  appState.newTaskKind = kind
+  appState.activeView = 'newTask'
+}
+function selectForExport(row) { startTask(row, 'export') }
+function selectForForward(row) { startTask(row, 'forward') }
+function selectForUpload(row) { startTask(row, 'upload') }
+function selectForCommentForward(row) { startTask(row, 'commentForward') }
+function selectForDownload(row) { startTask(row, 'download') }
 function toggleFav(row) {
   const next = toggleFavoriteChat(row)
   message.success(next ? '已收藏' : '已取消收藏')
@@ -105,19 +116,9 @@ async function loadFilteredLiveChats() {
   }
 }
 
-function run() {
-  if (output.value === 'table') {
-    runTask('chat-ls', ['chat', 'ls', '-o', 'table', ...(filter.value ? ['--filter', filter.value] : [])], '获取对话列表')
-    chats.value = []
-    return
-  }
-  if (filter.value) {
-    // 有 tdl filter 时，执行一次实时读取，但不覆盖中央缓存。
-    loadFilteredLiveChats()
-  } else {
-    // 没有 filter 时，手动刷新中央缓存；导出/转发/上传页面都会读取这份缓存。
-    loadCachedChats({ force: true })
-  }
+// 把 tdl 的 table 输出打到任务日志，不动这里的列表。
+function runTableOutput() {
+  runJob({ ...spec.value, output: 'table' }, '获取对话列表')
 }
 
 onMounted(() => {
@@ -126,130 +127,76 @@ onMounted(() => {
 </script>
 
 <template>
-  <h1 class="page-title">对话列表</h1>
-  <p class="page-desc">
-    第一次启动会自动刷新一次对话列表并写入缓存；缓存未过期前不会自动重复刷新。导出、转发、上传页面都会直接读取这里生成的缓存。
-  </p>
-  <div class="card">
-    <n-alert
-      type="info"
-      
-      :show-icon="true" :closable="false"
-      style="margin-bottom:16px"
-      :title="cacheMetaText"
-    />
-    <n-form label-width="100px">
-      <n-form-item label="输出格式">
-        <n-radio-group v-model:value="output">
-          <n-radio-button value="json">json</n-radio-button>
-          <n-radio-button value="table">table</n-radio-button>
-        </n-radio-group>
-      </n-form-item>
-      <n-form-item label="过滤表达式">
-        <n-input v-model:value="filter" placeholder="可选，例如 Type == 'channel'。有过滤时会实时读取，但不覆盖缓存。" />
-      </n-form-item>
-      <n-form-item label="搜索">
-        <n-input v-model:value="search" placeholder="在当前列表中搜索标题、用户名、ID 或类型" clearable />
-      </n-form-item>
-    </n-form>
-    <CommandPreview :command="commandText(args)" />
-    <div style="height:16px"></div>
-    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-      <n-button type="primary" :loading="loading" @click="run">
-        {{ output === 'table' ? '输出到日志' : filter ? '按过滤读取' : '更新对话缓存' }}
-      </n-button>
-      <n-button v-if="output === 'json' && !filter" :loading="loading" @click="loadCachedChats({ force: false })">读取本地缓存</n-button>
-      <span v-if="isFilteredLiveResult" style="color:var(--muted); font-size:13px;">当前为过滤后的实时结果，不会影响缓存。</span>
-    </div>
+  <header class="page-head">
+    <h1 class="page-title">对话</h1>
+    <p class="page-desc">从这里找到对话，直接发起导出、下载、转发或上传。列表来自本地缓存，不会每次都去问 tdl。</p>
+  </header>
 
-    <div v-if="output === 'json'" style="margin-top: 24px;">
-      <div class="table-meta">
-        当前显示 {{ filteredChats.length }} / {{ chats.length }} 条
-      </div>
-      <div v-if="chats.length" class="table-scroll">
-        <n-table :bordered="false" striped>
-          <thead>
-            <tr>
-              <th style="width:70px; text-align:center;">收藏</th>
-              <th style="width:190px;">ID</th>
-              <th style="min-width:220px;">标题</th>
-              <th style="width:120px;">类型</th>
-              <th style="width:180px;">用户名</th>
-              <th style="min-width:180px;">话题</th>
-              <th style="width:210px;">上次导出</th>
-              <th style="width:210px;">上次转发</th>
-              <th style="width:190px;">上次上传</th>
-              <th style="width:330px;">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="!filteredChats.length">
-              <td colspan="10" class="empty-cell">没有匹配当前搜索条件的对话。</td>
-            </tr>
-            <tr v-for="row in filteredChats" :key="String(chatId(row) || chatTitle(row))">
-              <td style="text-align:center;">
-                <span class="favorite-button" :class="{ off: !isFavoriteChat(chatId(row)) }" @click="toggleFav(row)">★</span>
-              </td>
-              <td>
-                <span v-if="chatId(row)" class="link-like" @click="copyId(chatId(row))">{{ chatId(row) }}</span>
-              </td>
-              <td>
-                <div class="table-title">{{ chatTitle(row) }}</div>
-                <details class="row-details">
-                  <summary>详情</summary>
-                  <p><strong>ID:</strong> {{ chatId(row) }}</p>
-                  <p><strong>类型:</strong> {{ chatType(row) }}</p>
-                  <p v-if="chatUsername(row)"><strong>用户名:</strong> {{ chatUsername(row) }}</p>
-                  <div v-if="chatTopics(row).length" class="topic-list">
-                    <n-tag v-for="topic in chatTopics(row)" :key="topic.id" type="info" size="small">{{ topic.title || topic.id }}</n-tag>
-                  </div>
-                  <p v-else><em>此会话没有话题。</em></p>
-                </details>
-              </td>
-              <td>
-                <n-tag :type="typeTagColor(chatType(row))" size="small">{{ chatType(row) }}</n-tag>
-              </td>
-              <td>{{ chatUsername(row) }}</td>
-              <td>
-                <div v-if="chatTopics(row).length" class="topic-list">
-                  <n-tag v-for="topic in chatTopics(row)" :key="topic.id" type="info" size="small">{{ topic.title }}</n-tag>
-                </div>
-              </td>
-              <td>
-                <div v-if="exportStatus(row)" class="status-stack">
-                  <div class="status-main">{{ exportStatus(row).maxId ? '最大ID ' + exportStatus(row).maxId : '-i ' + (exportStatus(row).input || '未记录') }}</div>
-                  <div class="status-sub">{{ exportStatus(row).time || '-' }}</div>
-                </div>
-                <span v-else class="mini-muted">暂无</span>
-              </td>
-              <td>
-                <div v-if="forwardStatus(row)" class="status-stack">
-                  <div class="status-main">{{ forwardStatus(row).threadLabel || forwardStatus(row).thread || '无话题' }}</div>
-                  <div class="status-sub">{{ forwardStatus(row).time || '-' }}</div>
-                </div>
-                <span v-else class="mini-muted">暂无</span>
-              </td>
-              <td>
-                <div v-if="uploadStatus(row)" class="status-stack">
-                  <div class="status-main">{{ uploadStatus(row).topic || '无话题' }}</div>
-                  <div class="status-sub">{{ uploadStatus(row).time || '-' }}</div>
-                </div>
-                <span v-else class="mini-muted">暂无</span>
-              </td>
-              <td>
-                <div class="action-row dense">
-                  <n-button size="tiny" @click="copyId(chatId(row))">复制ID</n-button>
-                  <n-button size="tiny" v-if="chatUsername(row)" @click="copyUsername(chatUsername(row))">复制用户名</n-button>
-                  <n-button size="tiny" type="primary" secondary @click="selectForExport(row)">导出</n-button>
-                  <n-button size="tiny" type="success" secondary @click="selectForForward(row)">转发</n-button>
-                  <n-button size="tiny" type="warning" secondary @click="selectForUpload(row)">上传</n-button>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </n-table>
-      </div>
-      <div v-else class="empty-cell">没有数据。首次启动会自动刷新；也可以点击“更新对话缓存”。</div>
-    </div>
+  <div class="chats-toolbar">
+    <n-input v-model:value="search" placeholder="搜索标题、用户名、ID 或类型" clearable size="large" class="chats-search" />
+    <n-button :loading="loading" @click="loadCachedChats({ force: true })">更新缓存</n-button>
+    <n-button quaternary @click="showAdvanced = !showAdvanced">{{ showAdvanced ? '收起' : '过滤表达式' }}</n-button>
   </div>
+  <div class="chats-meta">{{ cacheMetaText }}</div>
+
+  <div v-if="showAdvanced" class="card chats-advanced">
+    <div class="field-row">
+      <label class="field-label">过滤表达式</label>
+      <n-input v-model:value="filter" placeholder="例如 Type == 'channel'。有过滤时实时读取，不覆盖缓存。" />
+      <n-button :loading="loading" :disabled="!filter" @click="loadFilteredLiveChats">按过滤读取</n-button>
+    </div>
+    <div class="field-row">
+      <label class="field-label">输出为 table</label>
+      <span class="mini-muted">把 tdl 的表格输出打到任务日志里，不改变这里的列表。</span>
+      <n-button @click="runTableOutput">输出到日志</n-button>
+    </div>
+    <CommandPreview :command="commandTextForSpec(spec)" />
+  </div>
+
+  <div class="chats-count">
+    显示 {{ filteredChats.length }} / {{ chats.length }} 条
+    <span v-if="isFilteredLiveResult" class="mini-muted">· 当前是过滤后的实时结果，未写入缓存</span>
+  </div>
+
+  <div v-if="!chats.length" class="empty-cell card">还没有对话数据。点「更新缓存」拉取一次。</div>
+  <div v-else-if="!filteredChats.length" class="empty-cell card">没有匹配「{{ search }}」的对话。</div>
+
+  <ul v-else class="chat-list">
+    <li v-for="row in filteredChats" :key="String(chatId(row) || chatTitle(row))" class="chat-card">
+      <button
+        type="button"
+        class="chat-fav"
+        :class="{ off: !isFavoriteChat(chatId(row)) }"
+        :title="isFavoriteChat(chatId(row)) ? '取消收藏' : '收藏'"
+        @click="toggleFav(row)"
+      >★</button>
+
+      <div class="chat-main">
+        <div class="chat-line">
+          <span class="chat-name">{{ chatTitle(row) || '未命名对话' }}</span>
+          <n-tag size="small" :type="typeTagColor(chatType(row))">{{ chatType(row) || 'unknown' }}</n-tag>
+          <span v-if="chatUsername(row)" class="chat-username">@{{ chatUsername(row) }}</span>
+          <span v-if="chatTopics(row).length" class="chat-topics">话题 {{ chatTopics(row).length }}</span>
+        </div>
+        <div class="chat-line chat-sub">
+          <span class="link-like" title="点击复制 ID" @click="copyId(chatId(row))">{{ chatId(row) }}</span>
+          <span v-if="exportStatus(row)" class="chat-stat">
+            上次导出 {{ exportStatus(row).maxId ? '到 ' + exportStatus(row).maxId : exportStatus(row).input || '' }}
+          </span>
+          <span v-if="forwardStatus(row)" class="chat-stat">
+            上次转发 {{ forwardStatus(row).threadLabel || '无话题' }}
+          </span>
+          <span v-if="uploadStatus(row)" class="chat-stat">上次上传 {{ uploadStatus(row).time }}</span>
+        </div>
+      </div>
+
+      <div class="chat-actions">
+        <n-button size="small" secondary type="primary" @click="selectForExport(row)">导出</n-button>
+        <n-button size="small" secondary @click="selectForDownload(row)">下载</n-button>
+        <n-button size="small" secondary type="success" @click="selectForForward(row)">转发</n-button>
+        <n-button size="small" secondary type="info" @click="selectForCommentForward(row)">评论区</n-button>
+        <n-button size="small" secondary type="warning" @click="selectForUpload(row)">上传</n-button>
+      </div>
+    </li>
+  </ul>
 </template>

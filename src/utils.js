@@ -1,5 +1,12 @@
 import { appState } from './state'
 import { message } from './ui/naive'
+import { appendLog } from './logStore'
+import {
+  createIncrementalSpec,
+  sourceChatForSpec,
+  toArgs,
+  withForwardSource
+} from './jobSpec'
 import {
   TASK_STATE,
   isTaskFinished,
@@ -33,21 +40,60 @@ export function commandText(args) {
   return [c.tdlPath || 'tdl', ...globalArgs(), ...args].map(quoteArg).join(' ')
 }
 
-export function persistTasks() {
-  try {
-    const snapshot = appState.tasks.slice(0, 100).map(item => normalizeTaskRecord(item))
-    localStorage.setItem(TASKS_KEY, JSON.stringify(snapshot))
-  } catch {
-    // Ignore storage failures; task state still works in memory.
+export function commandTextForSpec(spec) {
+  return commandText(toArgs(spec))
+}
+
+export async function defaultOutputDir() {
+  if (appState.config?.defaultDownloadDir) return appState.config.defaultDownloadDir
+  if (window.tdlApi?.getDefaultOutputDir) return window.tdlApi.getDefaultOutputDir()
+  return 'output'
+}
+
+// 任务状态每次变更都同步序列化 100 条记录写 localStorage，是主线程上的同步开销。
+// 合并到下一个宏任务再写一次，页面卸载前强制冲刷。
+function createDebouncedWriter(key, snapshot) {
+  let timer = null
+  const write = () => {
+    timer = null
+    try {
+      localStorage.setItem(key, JSON.stringify(snapshot()))
+    } catch {
+      // Ignore storage failures; state still works in memory.
+    }
   }
+  const schedule = () => {
+    if (timer !== null) return
+    timer = setTimeout(write, 250)
+  }
+  schedule.flush = () => {
+    if (timer === null) return
+    clearTimeout(timer)
+    write()
+  }
+  return schedule
+}
+
+const writeTasks = createDebouncedWriter(TASKS_KEY, () =>
+  appState.tasks.slice(0, 100).map(item => normalizeTaskRecord(item)))
+const writeSchedules = createDebouncedWriter(SCHEDULES_KEY, () =>
+  appState.schedules.slice(0, 100))
+
+export function persistTasks() {
+  writeTasks()
 }
 
 export function persistSchedules() {
-  try {
-    localStorage.setItem(SCHEDULES_KEY, JSON.stringify(appState.schedules.slice(0, 100)))
-  } catch {
-    // Ignore storage failures; schedule state still works in memory.
-  }
+  writeSchedules()
+}
+
+export function flushPersistedState() {
+  writeTasks.flush()
+  writeSchedules.flush()
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', flushPersistedState)
 }
 
 export function createTask(type, args, title, extra = {}) {
@@ -95,6 +141,12 @@ export async function runTask(type, args, title, extra = {}) {
   return window.tdlApi.run({ taskId: task.id, args })
 }
 
+export async function runJob(spec, title, extra = {}) {
+  const args = spec?.kind === 'comment-forward' ? [] : toArgs(spec)
+  const task = createTask(spec.kind, args, title, { ...extra, spec })
+  return window.tdlApi.runJob({ taskId: task.id, spec })
+}
+
 export async function copyTaskCommand(task) {
   const text = task?.command || commandText(task?.args || [])
   await navigator.clipboard.writeText(text)
@@ -103,6 +155,7 @@ export async function copyTaskCommand(task) {
 
 export async function retryTask(task) {
   if (!task) return null
+  if (task.spec) return runJob(task.spec, task.title || task.type)
   return runTask(task.type, task.args || [], task.title || task.type)
 }
 
@@ -143,6 +196,15 @@ function inputRangeFromArgs(args = []) {
   const inputIndex = args.findIndex(item => ['-i', '--input'].includes(String(item)))
   if (inputIndex < 0 || !args[inputIndex + 1]) return null
   const raw = String(args[inputIndex + 1]).trim()
+  const parts = raw.split(',').map(item => Number(String(item).trim()))
+  if (!parts.length || parts.some(item => !Number.isSafeInteger(item) || item < 0)) return null
+  if (parts.length === 1) return { start: parts[0], end: parts[0], raw }
+  return { start: parts[0], end: parts[1], raw }
+}
+
+function inputRangeFromSpec(spec) {
+  if (spec?.kind !== 'export' || !spec.selector?.input) return null
+  const raw = String(spec.selector.input).trim()
   const parts = raw.split(',').map(item => Number(String(item).trim()))
   if (!parts.length || parts.some(item => !Number.isSafeInteger(item) || item < 0)) return null
   if (parts.length === 1) return { start: parts[0], end: parts[0], raw }
@@ -214,6 +276,21 @@ function exportArgsForSchedule(schedule, start, end) {
   return ['chat', 'export', '-c', schedule.watchChat, '-T', 'id', '-i', rangeText, '--all', '--with-content', '-o', output]
 }
 
+function exportSpecForSchedule(schedule, start, end) {
+  const rangeText = `${start},${end}`
+  if (schedule.spec?.kind === 'export') {
+    return createIncrementalSpec(schedule.spec, start, end, timestampToken())
+  }
+  return {
+    kind: 'export',
+    chat: schedule.watchChat,
+    selector: { type: 'id', input: rangeText },
+    all: true,
+    withContent: true,
+    output: defaultIncrementalOutputPath(schedule, rangeText)
+  }
+}
+
 function forwardArgsForIncrementalFile(args = [], filePath) {
   return replaceArgValue(args, ['--from'], filePath)
 }
@@ -238,6 +315,26 @@ export function runTaskAndWait(type, args, title, extra = {}) {
   })
 }
 
+export function runJobAndWait(spec, title, extra = {}) {
+  return new Promise(async (resolve, reject) => {
+    let offDone = null
+    try {
+      const args = spec?.kind === 'comment-forward' ? [] : toArgs(spec)
+      const task = createTask(spec.kind, args, title, { ...extra, spec })
+      offDone = window.tdlApi.onDone(data => {
+        if (data.taskId !== task.id) return
+        if (offDone) offDone()
+        if (data.code === 0) resolve(data)
+        else reject(new Error(`任务失败，退出码 ${data.code}`))
+      })
+      await window.tdlApi.runJob({ taskId: task.id, spec })
+    } catch (err) {
+      if (offDone) offDone()
+      reject(err)
+    }
+  })
+}
+
 export function createScheduleFromTask(task, options = {}) {
   if (!task || !Array.isArray(task.args) || !task.args.length) {
     throw new Error('该任务没有可重放的 tdl 参数，不能创建定时任务')
@@ -251,12 +348,13 @@ export function createScheduleFromTask(task, options = {}) {
     name: options.name || task.title || task.type,
     type: task.type,
     args: [...task.args],
-    templateOutputPath: outputPathFromArgs(task.args),
-    templateFromPath: fromPathFromArgs(task.args),
+    spec: task.spec ? JSON.parse(JSON.stringify(task.spec)) : null,
+    templateOutputPath: task.spec?.output || outputPathFromArgs(task.args),
+    templateFromPath: task.spec?.from || fromPathFromArgs(task.args),
     mode: options.mode || 'once',
     triggerMode: options.triggerMode || 'time',
-    watchChat: options.watchChat || sourceChatFromArgs(task.args),
-    lastSeenMessageId: Number(options.lastSeenMessageId || inputRangeFromArgs(task.args)?.end || 0),
+    watchChat: options.watchChat || sourceChatForSpec(task.spec) || sourceChatFromArgs(task.args),
+    lastSeenMessageId: Number(options.lastSeenMessageId || inputRangeFromSpec(task.spec)?.end || inputRangeFromArgs(task.args)?.end || 0),
     lastCheckedAt: '',
     runAt: Number(options.runAt || Date.now()),
     intervalMinutes: Math.max(1, Number(options.intervalMinutes || 60)),
@@ -307,30 +405,43 @@ export function toggleSchedule(schedule) {
 export async function runScheduledTaskNow(schedule) {
   if (!schedule || !Array.isArray(schedule.args)) return null
   if (schedule.chain === 'export-forward') {
+    const exportSpec = schedule.nextExportSpec || null
     const exportArgs = schedule.nextExportArgs || []
-    const exportOutput = outputPathFromArgs(exportArgs)
-    if (!exportArgs.length || !exportOutput) throw new Error('缺少增量导出参数')
+    const exportOutput = exportSpec?.output || outputPathFromArgs(exportArgs)
+    if ((!exportSpec && !exportArgs.length) || !exportOutput) throw new Error('缺少增量导出参数')
     scheduleEvent(schedule, 'run', `开始执行：先导出增量，再转发到目标聊天`)
-    await runTaskAndWait('export', exportArgs, `${schedule.name || schedule.type}（定时导出）`, { scheduleId: schedule.id })
-    const forwardArgs = forwardArgsForIncrementalFile(schedule.args, exportOutput)
-    const result = await runTaskAndWait('forward', forwardArgs, `${schedule.name || schedule.type}（定时转发）`, { scheduleId: schedule.id })
+    if (exportSpec) {
+      await runJobAndWait(exportSpec, `${schedule.name || schedule.type}（定时导出）`, { scheduleId: schedule.id })
+    } else {
+      await runTaskAndWait('export', exportArgs, `${schedule.name || schedule.type}（定时导出）`, { scheduleId: schedule.id })
+    }
+    const result = schedule.spec?.kind === 'forward'
+      ? await runJobAndWait(withForwardSource(schedule.spec, exportOutput), `${schedule.name || schedule.type}（定时转发）`, { scheduleId: schedule.id })
+      : await runTaskAndWait('forward', forwardArgsForIncrementalFile(schedule.args, exportOutput), `${schedule.name || schedule.type}（定时转发）`, { scheduleId: schedule.id })
     schedule.lastRunAt = new Date().toLocaleString()
     schedule.runCount = Number(schedule.runCount || 0) + 1
     schedule.lastStatus = '已发起增量导出并转发'
     scheduleEvent(schedule, 'run-success', `已发起增量导出并转发，游标推进到 ${schedule.pendingLastSeenMessageId || schedule.lastSeenMessageId || '-'}`)
     if (schedule.pendingLastSeenMessageId) schedule.lastSeenMessageId = schedule.pendingLastSeenMessageId
     schedule.nextArgs = null
+    schedule.nextSpec = null
     schedule.nextExportArgs = null
+    schedule.nextExportSpec = null
     schedule.pendingLastSeenMessageId = 0
     persistSchedules()
     return result
   }
   const taskTitle = `${schedule.name || schedule.type}（定时）`
+  const runSpec = schedule.nextSpec || schedule.spec
   const runArgs = schedule.nextArgs || schedule.args
   scheduleEvent(schedule, 'run', `开始执行：${schedule.triggerMode === 'chat-update' ? '检测后增量执行' : '按时间直接执行'}`)
-  const result = schedule.triggerMode === 'chat-update'
-    ? await runTaskAndWait(schedule.type, runArgs, taskTitle, { scheduleId: schedule.id })
-    : await runTask(schedule.type, runArgs, taskTitle, { scheduleId: schedule.id })
+  const result = runSpec
+    ? schedule.triggerMode === 'chat-update'
+      ? await runJobAndWait(runSpec, taskTitle, { scheduleId: schedule.id })
+      : await runJob(runSpec, taskTitle, { scheduleId: schedule.id })
+    : schedule.triggerMode === 'chat-update'
+      ? await runTaskAndWait(schedule.type, runArgs, taskTitle, { scheduleId: schedule.id })
+      : await runTask(schedule.type, runArgs, taskTitle, { scheduleId: schedule.id })
   schedule.lastRunAt = new Date().toLocaleString()
   schedule.runCount = Number(schedule.runCount || 0) + 1
   schedule.lastStatus = '已发起'
@@ -339,6 +450,7 @@ export async function runScheduledTaskNow(schedule) {
     : '已发起定时执行')
   if (schedule.pendingLastSeenMessageId) schedule.lastSeenMessageId = schedule.pendingLastSeenMessageId
   schedule.nextArgs = null
+  schedule.nextSpec = null
   schedule.pendingLastSeenMessageId = 0
   persistSchedules()
   return result
@@ -383,12 +495,26 @@ async function shouldRunSchedule(schedule) {
   const start = lastSeen + 1
   if (schedule.type === 'forward') {
     schedule.chain = 'export-forward'
-    schedule.nextExportArgs = exportArgsForSchedule(schedule, start, latest)
+    if (schedule.spec) {
+      schedule.nextExportSpec = exportSpecForSchedule(schedule, start, latest)
+      schedule.nextExportArgs = null
+    } else {
+      schedule.nextExportArgs = exportArgsForSchedule(schedule, start, latest)
+      schedule.nextExportSpec = null
+    }
     schedule.nextArgs = null
+    schedule.nextSpec = null
   } else {
     schedule.chain = ''
-    schedule.nextArgs = argsForIncrementalRange(schedule.args, start, latest)
+    if (schedule.spec?.kind === 'export') {
+      schedule.nextSpec = createIncrementalSpec(schedule.spec, start, latest, timestampToken())
+      schedule.nextArgs = null
+    } else {
+      schedule.nextArgs = argsForIncrementalRange(schedule.args, start, latest)
+      schedule.nextSpec = null
+    }
     schedule.nextExportArgs = null
+    schedule.nextExportSpec = null
   }
   schedule.pendingLastSeenMessageId = latest
   schedule.lastStatus = `发现更新：${start},${latest}`
@@ -419,7 +545,7 @@ export function startTaskScheduler() {
         schedule.nextRunAt = nextRunAfter(schedule, now)
       }
       persistSchedules()
-      appState.logs.push({
+      appendLog({
         taskId: 'scheduler',
         level: 'info',
         text: `[定时任务] 检查：${schedule.name || schedule.type}\n`
@@ -430,7 +556,7 @@ export function startTaskScheduler() {
         if (shouldRun) {
           await runScheduledTaskNow(schedule)
         } else {
-          appState.logs.push({
+          appendLog({
             taskId: 'scheduler',
             level: 'info',
             text: `[定时任务] 跳过：${schedule.name || schedule.type}，${schedule.lastStatus || '未满足触发条件'}\n`
@@ -440,7 +566,7 @@ export function startTaskScheduler() {
         schedule.lastStatus = '发起失败'
         scheduleEvent(schedule, 'error', `发起失败：${err?.message || err}`)
         persistSchedules()
-        appState.logs.push({
+        appendLog({
           taskId: 'scheduler',
           level: 'error',
           text: `[定时任务] 发起失败：${err?.message || err}\n`

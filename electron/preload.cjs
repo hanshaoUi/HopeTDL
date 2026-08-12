@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('tdlApi', {
   setConfig: config => ipcRenderer.invoke('config:set', config),
   checkEnvironment: () => ipcRenderer.invoke('environment:check'),
   run: payload => ipcRenderer.invoke('tdl:run', payload),
+  runJob: payload => ipcRenderer.invoke('job:run', payload),
   stop: taskId => ipcRenderer.invoke('tdl:stop', taskId),
   startCommentForward: payload => ipcRenderer.invoke('comment-forward:start', payload),
   stopCommentForward: () => ipcRenderer.invoke('comment-forward:stop'),

@@ -1,12 +1,13 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { commandText, runTask } from '../utils'
-import CommandPreview from '../components/CommandPreview.vue'
-import ChatSelect from '../components/ChatSelect.vue'
-import { appState } from '../state.js'
-import { message, confirmHtml } from '../ui/naive'
-import { chatId, chatTitle, findChatByValue } from '../chatCache'
-import { saveForwardRecord, touchRecentChat } from '../historyStore'
+import { commandTextForSpec, defaultOutputDir, runJob } from '../../utils'
+import CommandPreview from '../../components/CommandPreview.vue'
+import ChatSelect from '../../components/ChatSelect.vue'
+import { appState } from '../../state.js'
+import { message, confirmHtml } from '../../ui/naive'
+import { chatId, chatTitle, findChatByValue } from '../../chatCache'
+import { saveForwardRecord, touchRecentChat } from '../../historyStore'
+import { useAppliedRecord, useSelectedChat } from '../../useAppliedRecord'
 const sourceType = ref('file')
 const from = ref('')
 const peer = ref('')
@@ -47,7 +48,7 @@ function joinPath(dir, fileName) {
 }
 
 async function defaultJsonFile() {
-  const dir = appState.config?.defaultDownloadDir || await window.tdlApi.getDefaultOutputDir()
+  const dir = await defaultOutputDir()
   return joinPath(dir, 'messages.json')
 }
 
@@ -57,43 +58,41 @@ async function pickFile() {
 }
 
 // 如果从对话列表中点击“转发”，自动填充目标
+function applyRecord(record) {
+  sourceType.value = record.sourceType || 'file'
+  from.value = record.from || ''
+  peer.value = record.peer || record.to || ''
+  thread.value = record.thread || ''
+  mode.value = record.mode || 'clone'
+  dryRun.value = record.dryRun ?? true
+  silent.value = record.silent ?? false
+  single.value = record.single ?? false
+  desc.value = record.desc ?? false
+  edit.value = record.edit || ''
+  selectedTargetChat.value = findChatByValue(peer.value, appState.cachedChats || [])
+}
+
+useAppliedRecord('selectedForwardRecord', applyRecord)
+useSelectedChat(row => {
+  selectedTargetChat.value = row
+  touchRecentChat(row)
+  peer.value = String(row.id || row.dialog_id || row.dialogID || row.username || '')
+})
+
 onMounted(async () => {
-  if (appState && appState.selectedForwardRecord) {
-    const record = appState.selectedForwardRecord
-    sourceType.value = record.sourceType || 'file'
-    from.value = record.from || ''
-    peer.value = record.peer || record.to || ''
-    thread.value = record.thread || ''
-    mode.value = record.mode || 'clone'
-    dryRun.value = record.dryRun ?? true
-    silent.value = record.silent ?? false
-    single.value = record.single ?? false
-    desc.value = record.desc ?? false
-    edit.value = record.edit || ''
-    selectedTargetChat.value = findChatByValue(peer.value, appState.cachedChats || [])
-    appState.selectedForwardRecord = null
-  } else if (appState && appState.selectedChat) {
-    const row = appState.selectedChat
-    selectedTargetChat.value = row
-    touchRecentChat(row)
-    const id = row.id || row.dialog_id || row.dialogID || ''
-    peer.value = String(id || row.username || '')
-  }
   if (!from.value && sourceType.value === 'file') from.value = await defaultJsonFile()
 })
-const toValue = computed(() => thread.value ? `{ Peer: "${peer.value}", Thread: ${thread.value} }` : peer.value)
-const args = computed(() => {
-  const a = ['forward']
-  if (from.value) a.push('--from', from.value)
-  if (peer.value) a.push('--to', toValue.value)
-  if (mode.value) a.push('--mode', mode.value)
-  if (dryRun.value) a.push('--dry-run')
-  if (silent.value) a.push('--silent')
-  if (single.value) a.push('--single')
-  if (desc.value) a.push('--desc')
-  if (edit.value) a.push('--edit', edit.value)
-  return a
-})
+const spec = computed(() => ({
+  kind: 'forward',
+  from: from.value,
+  target: { peer: peer.value, thread: thread.value || null },
+  mode: mode.value,
+  dryRun: dryRun.value,
+  silent: silent.value,
+  single: single.value,
+  desc: desc.value,
+  edit: edit.value
+}))
 function targetLabel() {
   const row = selectedTargetChat.value || findChatByValue(peer.value, appState.cachedChats || [])
   const title = chatTitle(row)
@@ -130,7 +129,7 @@ function makeRecord(extra = {}) {
     single: single.value,
     desc: desc.value,
     edit: edit.value,
-    command: commandText(args.value),
+    command: commandTextForSpec(spec.value),
     time: new Date().toLocaleString(),
     ...extra
   }
@@ -164,14 +163,12 @@ async function run() {
   const record = saveForwardRecord(makeRecord({ estimatedMessages: countText }))
   const row = selectedTargetChat.value || findChatByValue(peer.value, appState.cachedChats || [])
   if (row) touchRecentChat(row)
-  await runTask('forward', args.value, '转发消息')
+  await runJob(spec.value, '转发消息')
   message.success('已记录本次转发参数')
 }
 
 </script>
 <template>
-  <h1 class="page-title">转发消息</h1>
-  <p class="page-desc">把 JSON / 链接转发到指定聊天或话题。默认开启 dry-run，避免误发。</p>
   <div class="card">
     <n-form label-width="120px">
       <n-form-item label="来源类型"><n-radio-group v-model:value="sourceType"><n-radio-button value="file">JSON 文件</n-radio-button><n-radio-button value="url">消息链接</n-radio-button></n-radio-group></n-form-item>
@@ -184,7 +181,7 @@ async function run() {
         </div>
       </n-form-item>
       <div class="grid-2">
-        <n-form-item label="目标 Peer">
+        <n-form-item label="目标对话">
           <ChatSelect
             v-model="peer"
             placeholder="从对话列表选择目标，或手动输入 @channel / ID"
@@ -192,7 +189,7 @@ async function run() {
             @select="handleTargetSelect"
           />
         </n-form-item>
-        <n-form-item label="Thread 话题">
+        <n-form-item label="目标话题">
           <n-select
             v-if="targetTopics.length"
             v-model:value="thread"
@@ -208,10 +205,10 @@ async function run() {
         </n-form-item>
       </div>
       <n-form-item label="模式"><n-radio-group v-model:value="mode"><n-radio-button value="direct">direct 保留来源</n-radio-button><n-radio-button value="clone">clone 复制发送</n-radio-button></n-radio-group></n-form-item>
-      <n-form-item label="选项"><n-checkbox v-model:checked="dryRun">dry-run 演练</n-checkbox><n-checkbox v-model:checked="silent">静默</n-checkbox><n-checkbox v-model:checked="single">单条</n-checkbox><n-checkbox v-model:checked="desc">倒序</n-checkbox></n-form-item>
-      <n-form-item label="编辑表达式"><n-input v-model:value="edit" placeholder='例如 Message.Message + "\n整理自频道"' /></n-form-item>
+      <n-form-item label="选项"><n-checkbox v-model:checked="dryRun">演练模式，不真正发送</n-checkbox><n-checkbox v-model:checked="silent">静默</n-checkbox><n-checkbox v-model:checked="single">单条</n-checkbox><n-checkbox v-model:checked="desc">倒序</n-checkbox></n-form-item>
+      <n-form-item label="内容改写"><n-input v-model:value="edit" placeholder='例如 Message.Message + "\n整理自频道"' /></n-form-item>
     </n-form>
-    <CommandPreview :command="commandText(args)" />
+    <CommandPreview :command="commandTextForSpec(spec)" />
     <div style="height:16px"></div>
     <n-alert v-if="dryRun" type="warning"  :show-icon="true" :closable="false" title="当前是 dry-run，只演练不真正发送。正式转发前取消勾选。" />
     <div style="height:16px"></div>

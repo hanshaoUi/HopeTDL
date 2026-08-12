@@ -1,8 +1,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { message } from '../ui/naive'
-import { appState } from '../state'
-import { getDownloadRecords, getExportRecords, getForwardRecords, getUploadRecords } from '../historyStore'
+import { message } from '../../ui/naive'
+import { appState } from '../../state'
+import { getCommentForwardRecords, getDownloadRecords, getExportRecords, getForwardRecords, getUploadRecords } from '../../historyStore'
 
 const activeTab = ref('exports')
 const refreshKey = ref(0)
@@ -11,6 +11,8 @@ const exportsRows = computed(() => { refreshKey.value; return getExportRecords()
 const forwardRows = computed(() => { refreshKey.value; return getForwardRecords() })
 const downloadRows = computed(() => { refreshKey.value; return getDownloadRecords() })
 const uploadRows = computed(() => { refreshKey.value; return getUploadRecords() })
+const commentForwardRows = computed(() => { refreshKey.value; return getCommentForwardRecords() })
+const currentNamespace = computed(() => String(appState.config?.ns || 'hope'))
 
 function refresh() { refreshKey.value++ }
 
@@ -20,22 +22,32 @@ function copyText(text) {
 
 function applyExport(row) {
   appState.selectedExportRecord = row
-  appState.activeView = 'export'
+  appState.newTaskKind = 'export'
+  appState.activeView = 'newTask'
 }
 
 function applyForward(row) {
   appState.selectedForwardRecord = row
-  appState.activeView = 'forward'
+  appState.newTaskKind = 'forward'
+  appState.activeView = 'newTask'
 }
 
 function applyUpload(row) {
   appState.selectedUploadRecord = row
-  appState.activeView = 'upload'
+  appState.newTaskKind = 'upload'
+  appState.activeView = 'newTask'
+}
+
+function applyCommentForward(row) {
+  appState.selectedCommentForwardRecord = row
+  appState.newTaskKind = 'commentForward'
+  appState.activeView = 'newTask'
 }
 
 function applyDownload(row) {
   appState.selectedDownloadRecord = row
-  appState.activeView = 'download'
+  appState.newTaskKind = 'download'
+  appState.activeView = 'newTask'
 }
 
 function showFile(filePath) {
@@ -59,8 +71,6 @@ onMounted(refresh)
 </script>
 
 <template>
-  <h1 class="page-title">历史记录</h1>
-  <p class="page-desc">集中查看导出、转发、下载、上传记录。可以套用参数、复制命令、打开文件位置。</p>
 
   <div class="card">
     <div class="history-toolbar">
@@ -69,7 +79,9 @@ onMounted(refresh)
         <n-tab-pane :tab="`转发历史 ${forwardRows.length}`" name="forwards" />
         <n-tab-pane :tab="`下载历史 ${downloadRows.length}`" name="downloads" />
         <n-tab-pane :tab="`上传历史 ${uploadRows.length}`" name="uploads" />
+        <n-tab-pane :tab="`评论区转发 ${commentForwardRows.length}`" name="commentForwards" />
       </n-tabs>
+      <n-tag size="small" :bordered="false">ns: {{ currentNamespace }}</n-tag>
       <n-button @click="refresh">刷新历史</n-button>
     </div>
 
@@ -78,10 +90,10 @@ onMounted(refresh)
         <thead>
           <tr>
             <th style="width:170px;">时间</th>
-            <th style="width:170px;">源聊天 -c</th>
-            <th style="width:150px;">本次 -i</th>
+            <th style="width:170px;">源对话</th>
+            <th style="width:150px;">本次范围</th>
             <th style="width:110px;">最大ID</th>
-            <th style="width:210px;">下次建议 -i</th>
+            <th style="width:210px;">下次建议范围</th>
             <th style="min-width:280px;">输出文件</th>
             <th style="width:290px;">操作</th>
           </tr>
@@ -164,6 +176,40 @@ onMounted(refresh)
                 <n-button size="small" type="primary" secondary @click="applyDownload(row)">套用</n-button>
                 <n-button size="small" @click="copyText(row.command)">复制命令</n-button>
                 <n-button size="small" @click="openPath(row.dir)" :disabled="!row.dir">打开目录</n-button>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </n-table>
+    </div>
+
+    <div v-if="activeTab === 'commentForwards'" class="table-scroll">
+      <n-table :bordered="false" striped>
+        <thead>
+          <tr>
+            <th style="width:170px;">时间</th>
+            <th style="min-width:150px;">源对话</th>
+            <th style="min-width:150px;">目标</th>
+            <th style="width:110px;">话题</th>
+            <th style="width:150px;">范围</th>
+            <th style="width:120px;">关键词</th>
+            <th style="width:200px;">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-if="!commentForwardRows.length"><td colspan="7" class="empty-cell">暂无评论区转发记录</td></tr>
+          <tr v-for="row in commentForwardRows" :key="row.id">
+            <td>{{ row.time }}</td>
+            <td class="truncate-cell">{{ row.sourceChat }}</td>
+            <td class="truncate-cell">{{ row.targetChat || '-' }}</td>
+            <td>{{ row.targetTopicId || '-' }}</td>
+            <td>{{ row.startId || '起' }} - {{ row.endId || '止' }}</td>
+            <td>{{ row.blockKeywordsText ? '有' : '无' }}</td>
+            <td>
+              <div class="action-row dense">
+                <n-button size="small" type="primary" secondary @click="applyCommentForward(row)">套用</n-button>
+                <n-button size="small" @click="copyText(row.command)">复制命令</n-button>
+                <n-button size="small" :disabled="!row.workDir" @click="openPath(row.workDir)">打开目录</n-button>
               </div>
             </td>
           </tr>

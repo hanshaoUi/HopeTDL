@@ -19,16 +19,28 @@ const value = computed({
   set: val => emit('update:modelValue', val || '')
 })
 
-const chats = computed(() => sortChatsForUse(appState.cachedChats || []))
+// cachedChats 是 markRaw 的，内容变化只靠 chatCacheVersion 触发重算，
+// 这样排序和 option 构建不会在每次无关的响应式更新时重复跑一遍。
+const chats = computed(() => {
+  appState.chatCacheVersion
+  return sortChatsForUse(appState.cachedChats || [])
+})
 const chatOptions = computed(() => chats.value.map(row => ({
   label: chatOptionLabel(row),
   value: String(chatId(row)),
   row
 })))
-const recentKeys = computed(() => new Set(getRecentChats().map(item => item.key)))
+const recentKeys = computed(() => {
+  appState.chatCacheVersion
+  return new Set(getRecentChats().map(item => item.key))
+})
 const loading = computed(() => appState.chatCacheLoading)
 
 async function loadChats(force = false) {
+  if (!window.tdlApi) return
+  // 已经有缓存就不再往主进程要一遍整份列表：
+  // 原来每次下拉展开和聚焦都会走一次 IPC，把上千条对话重新序列化传一遍。
+  if (!force && chats.value.length) return
   try {
     // 非强制时只读取/确保缓存；缓存未过期不会再次运行 tdl。
     await loadChatCache({ ensure: !force, refresh: force })

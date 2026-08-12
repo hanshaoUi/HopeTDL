@@ -3,6 +3,9 @@ const path = require('path')
 const fs = require('fs')
 const { spawn } = require('child_process')
 const { CommentForwardWorker } = require('./commentForwardWorker.cjs')
+const { extractMessageIds } = require('./shared/messageJson.cjs')
+const { filterAndCount, shouldSkipForward } = require('./shared/messageFilter.cjs')
+const jobSpecModule = import('../shared/jobSpec.mjs')
 
 const isDev = !app.isPackaged
 const devServerUrl = 'http://127.0.0.1:5174'
@@ -19,32 +22,72 @@ let appStatus = {
   lastScheduleCheck: ''
 }
 const activeTdlChildren = new Map()
+
+// tdl 的 stdout 是高频小块（进度条每秒几十上百次重绘）。
+// 每块都单独走一次 IPC + 一次渲染端 push，会把主进程和渲染进程一起拖死。
+// 这里按 taskId 聚合，最多每 LOG_FLUSH_MS 发一帧，并且单帧超过 LOG_FLUSH_MAX_BYTES 立即冲刷。
+const LOG_FLUSH_MS = 120
+const LOG_FLUSH_MAX_BYTES = 64 * 1024
+const logBuffers = new Map()
+
+function flushLogBuffer(key) {
+  const entry = logBuffers.get(key)
+  if (!entry) return
+  logBuffers.delete(key)
+  if (entry.timer) clearTimeout(entry.timer)
+  if (!entry.text) return
+  const sender = entry.sender
+  if (!sender || sender.isDestroyed()) return
+  sender.send('tdl:log', { taskId: entry.taskId, level: entry.level, text: entry.text })
+}
+
+function flushAllLogBuffers() {
+  for (const key of Array.from(logBuffers.keys())) flushLogBuffer(key)
+}
+
+function sendLog(sender, { taskId, level, text }) {
+  if (!sender || sender.isDestroyed()) return
+  const content = String(text ?? '')
+  if (!content) return
+  const key = `${sender.id}::${taskId}::${level}`
+  const existing = logBuffers.get(key)
+  if (existing) {
+    existing.text += content
+    if (existing.text.length >= LOG_FLUSH_MAX_BYTES) flushLogBuffer(key)
+    return
+  }
+  const entry = { sender, taskId, level, text: content, timer: null }
+  entry.timer = setTimeout(() => flushLogBuffer(key), LOG_FLUSH_MS)
+  if (entry.timer.unref) entry.timer.unref()
+  logBuffers.set(key, entry)
+  if (entry.text.length >= LOG_FLUSH_MAX_BYTES) flushLogBuffer(key)
+}
+
 const userDataDir = () => app.getPath('userData')
 const configPath = () => path.join(userDataDir(), 'config.json')
 const chatCachePath = () => path.join(userDataDir(), 'chats-cache.json')
 
 function projectRoot() {
   // In dev mode, __dirname is <project>/electron, so the root is one level up.
-  // In packaged mode, use the executable directory as a predictable writable-adjacent base.
-  return isDev ? path.resolve(__dirname, '..') : path.dirname(app.getPath('exe'))
+  return path.resolve(__dirname, '..')
 }
 
 function defaultOutputDir() {
-  const dir = path.join(projectRoot(), 'output')
+  // 打包后 dirname(exe) 在 macOS 上是 HopeTDL.app/Contents/MacOS，
+  // 往里写 output/ 会破坏签名、被 Gatekeeper 拦，而且升级时整个目录被替换、数据丢失。
+  // 打包版一律写到用户可见的文档目录。
+  const base = isDev ? projectRoot() : path.join(app.getPath('documents'), 'HopeTDL')
+  const dir = path.join(base, 'output')
   fs.mkdirSync(dir, { recursive: true })
   return dir
 }
 
 function appIconPath() {
-  return isDev
-    ? path.join(projectRoot(), 'assets', 'icons', 'icon.png')
-    : path.join(__dirname, '..', 'assets', 'icons', 'icon.png')
+  return path.join(projectRoot(), 'assets', 'icons', 'icon.png')
 }
 
 function trayIconPath() {
-  return isDev
-    ? path.join(projectRoot(), 'assets', 'icons', 'icon-24.png')
-    : path.join(__dirname, '..', 'assets', 'icons', 'icon-24.png')
+  return path.join(projectRoot(), 'assets', 'icons', 'icon-24.png')
 }
 
 function trayIcon() {
@@ -106,7 +149,17 @@ function defaultConfig() {
     chatCacheDays: 7,
     // Default export/download location is <project root>/output.
     defaultDownloadDir: defaultOutputDir(),
-    tdlPath: resolveTdlPath('tdl')
+    tdlPath: resolveTdlPath('tdl'),
+    forwardFilterEnabled: false,
+    filterKeywordsText: '',
+    filterKeywordAction: 'drop-message',
+    filterKeywordReplacement: '',
+    removeLinks: false,
+    blockImages: false,
+    blockVideos: false,
+    blockTextOnly: false,
+    keywordCaseSensitive: false,
+    keywordRegexMode: false
   }
 }
 
@@ -243,7 +296,7 @@ function updateTrayMenu() {
     { label: `最近一次检测：${appStatus.lastScheduleCheck || '-'}`, enabled: false },
     { type: 'separator' },
     { label: '打开 HopeTDL', click: showMainWindow },
-    { label: '任务中心', click: () => navigateRenderer('taskCenter') },
+    { label: '任务', click: () => navigateRenderer('tasks') },
     { label: '设置', click: () => navigateRenderer('settings') },
     { type: 'separator' },
     {
@@ -303,9 +356,43 @@ function buildGlobalArgs(config) {
 function runTdl(event, payload) {
   const config = readConfig()
   const tdlPath = resolveTdlPath(config.tdlPath || 'tdl')
-  const args = [...buildGlobalArgs(config), ...(payload.args || [])]
   const taskId = payload.taskId || `task_${Date.now()}`
-  event.sender.send('tdl:log', { taskId, level: 'info', text: `$ ${tdlPath} ${args.map(a => String(a).includes(' ') ? JSON.stringify(a) : a).join(' ')}\n` })
+  const taskArgs = [...(payload.args || [])]
+  const cleanupFiles = [...(payload.cleanupFiles || [])]
+  let skipEmptyForward = false
+  if (taskArgs[0] === 'forward') {
+    const sourceIndex = taskArgs.findIndex(item => String(item) === '--from')
+    const sourceFile = sourceIndex >= 0 ? String(taskArgs[sourceIndex + 1] || '') : ''
+    if (sourceFile && fs.existsSync(sourceFile)) {
+      const filteredFile = path.join(app.getPath('temp'), 'HopeTDL', 'filtered', `${taskId}.json`)
+      const result = filterAndCount(sourceFile, filteredFile, config)
+      if (result.enabled) {
+        taskArgs[sourceIndex + 1] = result.file
+        cleanupFiles.push(result.file)
+        const typeCount = Object.values(result.removedByType || {}).reduce((sum, value) => sum + value, 0)
+        sendLog(event.sender, {
+          taskId,
+          level: 'info',
+          text: `[全局过滤] 删除消息 ${result.removed} 条（内容类型 ${typeCount} 条），移除链接 ${result.linksRemoved} 处，保留 ${result.count} 条。\n`
+        })
+        skipEmptyForward = shouldSkipForward(result)
+      }
+    }
+  }
+  const args = [...buildGlobalArgs(config), ...taskArgs]
+  sendLog(event.sender, { taskId, level: 'info', text: `$ ${tdlPath} ${args.map(a => String(a).includes(' ') ? JSON.stringify(a) : a).join(' ')}\n` })
+
+  if (skipEmptyForward) {
+    sendLog(event.sender, { taskId, level: 'warning', text: '[全局过滤] 没有剩余消息，已安全跳过 tdl 转发。\n' })
+    setImmediate(() => {
+      flushAllLogBuffers()
+      if (!event.sender.isDestroyed()) event.sender.send('tdl:done', { taskId, code: 0, skipped: true })
+      for (const file of cleanupFiles) {
+        try { fs.rmSync(file, { force: true }) } catch {}
+      }
+    })
+    return { taskId, pid: null, args, skipped: true }
+  }
 
   // Ensure the parent directory of export/download output exists when -o is used.
   const outputIndex = args.findIndex(item => String(item) === '-o' || String(item) === '--output')
@@ -313,7 +400,7 @@ function runTdl(event, payload) {
     try {
       fs.mkdirSync(path.dirname(String(args[outputIndex + 1])), { recursive: true })
     } catch (err) {
-      event.sender.send('tdl:log', { taskId, level: 'warning', text: `[输出目录创建失败] ${err.message}\n` })
+      sendLog(event.sender, { taskId, level: 'warning', text: `[输出目录创建失败] ${err.message}\n` })
     }
   }
 
@@ -321,20 +408,29 @@ function runTdl(event, payload) {
   activeTdlChildren.set(taskId, child)
 
   child.stdout.on('data', data => {
-    event.sender.send('tdl:log', { taskId, level: 'stdout', text: data.toString() })
+    sendLog(event.sender, { taskId, level: 'stdout', text: data.toString() })
   })
   child.stderr.on('data', data => {
-    event.sender.send('tdl:log', { taskId, level: 'stderr', text: data.toString() })
+    sendLog(event.sender, { taskId, level: 'stderr', text: data.toString() })
   })
   child.on('error', err => {
     activeTdlChildren.delete(taskId)
-    event.sender.send('tdl:log', { taskId, level: 'error', text: `\n[启动失败] ${err.message}\n[建议] 打包后的 macOS App 可能找不到终端里的 tdl。请在设置里把 tdl 路径改成 /opt/homebrew/bin/tdl 或 /usr/local/bin/tdl；本版也会自动尝试这些路径。\n` })
-    event.sender.send('tdl:done', { taskId, code: -1 })
+    sendLog(event.sender, { taskId, level: 'error', text: `\n[启动失败] ${err.message}\n[建议] 打包后的 macOS App 可能找不到终端里的 tdl。请在设置里把 tdl 路径改成 /opt/homebrew/bin/tdl 或 /usr/local/bin/tdl；本版也会自动尝试这些路径。\n` })
+    flushAllLogBuffers()
+    if (!event.sender.isDestroyed()) event.sender.send('tdl:done', { taskId, code: -1 })
+    for (const file of cleanupFiles) {
+      try { fs.rmSync(file, { force: true }) } catch {}
+    }
   })
   child.on('close', code => {
     activeTdlChildren.delete(taskId)
-    event.sender.send('tdl:log', { taskId, level: code === 0 ? 'info' : 'error', text: `\n[任务结束] exit code: ${code}\n` })
-    event.sender.send('tdl:done', { taskId, code })
+    sendLog(event.sender, { taskId, level: code === 0 ? 'info' : 'error', text: `\n[任务结束] exit code: ${code}\n` })
+    // 任务结束时立即冲刷，保证 done 之前日志已经到齐。
+    flushAllLogBuffers()
+    if (!event.sender.isDestroyed()) event.sender.send('tdl:done', { taskId, code })
+    for (const file of cleanupFiles) {
+      try { fs.rmSync(file, { force: true }) } catch {}
+    }
   })
   return { taskId, pid: child.pid, args }
 }
@@ -347,9 +443,21 @@ function stopTdlTask(taskId) {
 }
 
 
+// 对话缓存文件可能有几 MB。chats:cache:get 每个页面都会调，
+// 每次都整份 readFileSync + JSON.parse 会反复制造大对象喂给 GC。
+// 按 mtime 记忆解析结果，文件没变就直接复用。
+let chatStoreMemo = { mtimeMs: -1, size: -1, store: null }
+
 function readChatCacheStore() {
+  const file = chatCachePath()
   try {
-    return JSON.parse(fs.readFileSync(chatCachePath(), 'utf8'))
+    const stat = fs.statSync(file)
+    if (chatStoreMemo.store && chatStoreMemo.mtimeMs === stat.mtimeMs && chatStoreMemo.size === stat.size) {
+      return chatStoreMemo.store
+    }
+    const store = JSON.parse(fs.readFileSync(file, 'utf8'))
+    chatStoreMemo = { mtimeMs: stat.mtimeMs, size: stat.size, store }
+    return store
   } catch {
     return { version: 1, caches: {} }
   }
@@ -357,7 +465,14 @@ function readChatCacheStore() {
 
 function writeChatCacheStore(store) {
   fs.mkdirSync(userDataDir(), { recursive: true })
-  fs.writeFileSync(chatCachePath(), JSON.stringify(store, null, 2), 'utf8')
+  const file = chatCachePath()
+  fs.writeFileSync(file, JSON.stringify(store), 'utf8')
+  try {
+    const stat = fs.statSync(file)
+    chatStoreMemo = { mtimeMs: stat.mtimeMs, size: stat.size, store }
+  } catch {
+    chatStoreMemo = { mtimeMs: -1, size: -1, store: null }
+  }
 }
 
 function chatCacheTtlMs(config = readConfig()) {
@@ -416,7 +531,7 @@ function fetchChatsFromTdl(event, { filter = '', cache = false, reason = 'refres
   if (filter) args.push('--filter', filter)
 
   if (event?.sender) {
-    event.sender.send('tdl:log', {
+    sendLog(event.sender, {
       taskId: 'chat-cache',
       level: 'info',
       text: `$ ${tdlPath} ${args.map(a => String(a).includes(' ') ? JSON.stringify(a) : a).join(' ')}\n`
@@ -439,11 +554,12 @@ function fetchChatsFromTdl(event, { filter = '', cache = false, reason = 'refres
         const chats = parseChatListOutput(stdout)
         const result = cache ? saveChatCache(config, chats) : { chats, count: chats.length }
         if (event?.sender) {
-          event.sender.send('tdl:log', {
+          sendLog(event.sender, {
             taskId: 'chat-cache',
             level: 'info',
             text: `[对话列表] ${reason} 完成，共 ${chats.length} 条\n`
           })
+          flushAllLogBuffers()
         }
         resolve(result)
       } catch (err) {
@@ -454,50 +570,6 @@ function fetchChatsFromTdl(event, { filter = '', cache = false, reason = 'refres
 }
 
 
-function asSafeInteger(value) {
-  if (value === undefined || value === null || value === '') return null
-  const n = Number(value)
-  if (!Number.isFinite(n) || !Number.isSafeInteger(n)) return null
-  if (n < 0) return null
-  return n
-}
-
-function looksLikeMessageObject(obj, trustId = false) {
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false
-  const id = asSafeInteger(obj.id ?? obj.ID ?? obj.message_id ?? obj.messageID)
-  if (id === null) return false
-  if (trustId) return true
-  const messageKeys = [
-    'date', 'message', 'text', 'raw', 'media', 'file', 'from_id', 'fromId', 'peer_id', 'peerId',
-    'reply_to', 'replyTo', 'edit_date', 'editDate', 'entities', 'views', 'forwards', 'out', 'post',
-    'grouped_id', 'groupedId', 'via_bot_id', 'viaBotId', 'ttl_period', 'ttlPeriod'
-  ]
-  return messageKeys.some(key => Object.prototype.hasOwnProperty.call(obj, key))
-}
-
-function collectMessageIds(node, ids = [], contextKey = '') {
-  if (!node) return ids
-
-  if (Array.isArray(node)) {
-    const trustedArray = ['messages', 'message', 'items', 'list', 'data', 'result'].includes(String(contextKey || '').toLowerCase())
-    for (const item of node) {
-      if (looksLikeMessageObject(item, trustedArray)) {
-        const id = asSafeInteger(item.id ?? item.ID ?? item.message_id ?? item.messageID)
-        if (id !== null) ids.push(id)
-      }
-      collectMessageIds(item, ids, contextKey)
-    }
-    return ids
-  }
-
-  if (typeof node === 'object') {
-    for (const [key, value] of Object.entries(node)) {
-      collectMessageIds(value, ids, key)
-    }
-  }
-  return ids
-}
-
 function analyzeExportFile(filePath) {
   if (!filePath || !fs.existsSync(filePath)) {
     return { ok: false, reason: '输出文件不存在', filePath }
@@ -506,8 +578,8 @@ function analyzeExportFile(filePath) {
     const content = fs.readFileSync(filePath, 'utf8')
     if (!content.trim()) return { ok: false, reason: '输出文件为空', filePath }
     const json = JSON.parse(content)
-    const ids = collectMessageIds(json).filter(n => Number.isSafeInteger(n) && n >= 0)
-    const unique = Array.from(new Set(ids)).sort((a, b) => a - b)
+    // collectMessageIds 内部已经用 asSafeInteger 过滤过，这里不需要再筛一遍。
+    const unique = extractMessageIds(json)
     if (!unique.length) {
       return { ok: false, reason: '没有在导出 JSON 中识别到消息 ID', filePath }
     }
@@ -616,6 +688,7 @@ function startCommentForward(event, payload = {}) {
   const config = readConfig()
   const taskId = payload.taskId || `comment_forward_${Date.now()}`
   const worker = new CommentForwardWorker({
+    ...config,
     ...payload,
     taskId,
     tdlPath: resolveTdlPath(payload.tdlPath || config.tdlPath || 'tdl'),
@@ -628,7 +701,7 @@ function startCommentForward(event, payload = {}) {
   const sender = event.sender
 
   worker.on('log', data => {
-    if (!sender.isDestroyed()) sender.send('tdl:log', data)
+    sendLog(sender, data)
   })
 
   worker.on('progress', data => {
@@ -638,6 +711,7 @@ function startCommentForward(event, payload = {}) {
   worker.on('status', data => {
     if (!sender.isDestroyed()) sender.send('comment-forward:status', data)
     if (['done', 'error', 'stopped'].includes(data.status)) {
+      flushAllLogBuffers()
       if (!sender.isDestroyed()) sender.send('tdl:done', { taskId, code: data.status === 'done' ? 0 : 1 })
       currentCommentForwardWorker = null
     }
@@ -645,6 +719,16 @@ function startCommentForward(event, payload = {}) {
 
   worker.start()
   return { ok: true, taskId, workDir: worker.paths.root, message: '评论区顺序转发任务已开始' }
+}
+
+async function runJob(event, payload = {}) {
+  const taskId = payload.taskId || `${payload.spec?.kind || 'job'}_${Date.now()}`
+  const { executionForSpec } = await jobSpecModule
+  const execution = executionForSpec(payload.spec)
+  if (execution.kind === 'comment-forward') {
+    return startCommentForward(event, { ...execution.payload, taskId })
+  }
+  return runTdl(event, { taskId, args: execution.args })
 }
 
 function stopCommentForward() {
@@ -729,6 +813,7 @@ async function checkEnvironment() {
 ipcMain.handle('config:get', () => readConfig())
 ipcMain.handle('config:set', (_, config) => saveConfig(config))
 ipcMain.handle('tdl:run', (event, payload) => runTdl(event, payload))
+ipcMain.handle('job:run', (event, payload) => runJob(event, payload))
 ipcMain.handle('tdl:stop', (_, taskId) => stopTdlTask(taskId))
 ipcMain.handle('environment:check', () => checkEnvironment())
 ipcMain.handle('comment-forward:start', (event, payload) => startCommentForward(event, payload))

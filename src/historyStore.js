@@ -5,22 +5,38 @@ export const EXPORT_MEMORY_KEY = 'hopetdl.export.memory.v1'
 export const FORWARD_HISTORY_KEY = 'hopetdl.forward.history.v1'
 export const UPLOAD_HISTORY_KEY = 'hopetdl.upload.history.v1'
 export const DOWNLOAD_HISTORY_KEY = 'hopetdl.download.history.v1'
+export const COMMENT_FORWARD_HISTORY_KEY = 'hopetdl.commentforward.history.v1'
 export const CHAT_PREFS_KEY = 'hopetdl.chat.prefs.v1'
 
 export function nsKey() {
   return String(appState.config?.ns || 'default')
 }
 
+// localStorage.getItem + JSON.parse 在排序/渲染热路径上会被调用成百上千次
+// （chatSortScore 每次比较都要读收藏和最近列表）。这里缓存解析结果，写入时失效。
+const parsedCache = new Map()
+
 export function readJson(key, fallback = {}) {
+  if (parsedCache.has(key)) return parsedCache.get(key)
+  let value
   try {
-    return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback))
+    const raw = localStorage.getItem(key)
+    value = raw ? JSON.parse(raw) : fallback
   } catch {
-    return fallback
+    value = fallback
   }
+  parsedCache.set(key, value)
+  return value
 }
 
 export function writeJson(key, value) {
+  parsedCache.set(key, value)
   localStorage.setItem(key, JSON.stringify(value))
+}
+
+export function invalidateStorageCache(key) {
+  if (key) parsedCache.delete(key)
+  else parsedCache.clear()
 }
 
 export function normalizeChatKey(value) {
@@ -126,6 +142,16 @@ export function saveUploadRecord(record, ns = nsKey()) {
   return saveScopedRecord(UPLOAD_HISTORY_KEY, { type: 'upload', ...record }, ns)
 }
 
+// 评论区顺序转发的参数最多（二十来个开关），却是原来唯一不留历史的任务，
+// 每次都得从头重填。
+export function getCommentForwardRecords(ns = nsKey()) {
+  return getScopedHistory(COMMENT_FORWARD_HISTORY_KEY, ns).records || []
+}
+
+export function saveCommentForwardRecord(record, ns = nsKey()) {
+  return saveScopedRecord(COMMENT_FORWARD_HISTORY_KEY, { type: 'comment-forward', ...record }, ns)
+}
+
 export function getDownloadRecords(ns = nsKey()) {
   return getScopedHistory(DOWNLOAD_HISTORY_KEY, ns).records || []
 }
@@ -201,12 +227,29 @@ export function chatSortScore(row, ns = nsKey()) {
 }
 
 export function sortChatsForUse(chats, ns = nsKey()) {
-  return [...(chats || [])].sort((a, b) => {
-    const sa = chatSortScore(a, ns)
-    const sb = chatSortScore(b, ns)
-    if (sa !== sb) return sa - sb
-    return chatLabelFromRow(a).localeCompare(chatLabelFromRow(b), 'zh-Hans-CN')
+  const rows = chats || []
+  if (!rows.length) return []
+
+  // 先一次性算好每行的排序键，再排序。
+  // 原来在比较函数里现算 score 和 label，n 条对话要做 O(n log n) 次
+  // 收藏查找 + 最近列表线性扫描 + 标签拼接，几千条时明显卡顿。
+  const favorites = getFavoriteMap(ns)
+  const recentRank = new Map()
+  getRecentChats(ns).forEach((item, index) => {
+    if (!recentRank.has(item.key)) recentRank.set(item.key, index)
   })
+
+  const decorated = rows.map(row => {
+    const key = normalizeChatKey(chatValueFromRow(row))
+    let score = 1000
+    if (favorites[key]) score = 0
+    else if (recentRank.has(key)) score = 10 + recentRank.get(key)
+    return { row, score, label: chatLabelFromRow(row) }
+  })
+
+  const collator = new Intl.Collator('zh-Hans-CN')
+  decorated.sort((a, b) => (a.score - b.score) || collator.compare(a.label, b.label))
+  return decorated.map(item => item.row)
 }
 
 export function formatTime(value) {

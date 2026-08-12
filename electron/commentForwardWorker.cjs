@@ -2,6 +2,13 @@ const fs = require('fs')
 const path = require('path')
 const { spawn } = require('child_process')
 const EventEmitter = require('events')
+const {
+  extractMessageIds,
+} = require('./shared/messageJson.cjs')
+const { filterAndCount } = require('./shared/messageFilter.cjs')
+
+// 子进程输出只保留尾部这么多字符用于报错，其余丢弃。
+const OUTPUT_TAIL_LIMIT = 32 * 1024
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -38,181 +45,6 @@ function createStamp() {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
 }
 
-function asSafeInteger(value) {
-  if (value === undefined || value === null || value === '') return null
-  const n = Number(value)
-  if (!Number.isFinite(n) || !Number.isSafeInteger(n)) return null
-  if (n < 0) return null
-  return n
-}
-
-function looksLikeMessageObject(obj, trustId = false) {
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false
-  const id = asSafeInteger(obj.id ?? obj.ID ?? obj.message_id ?? obj.messageID)
-  if (id === null) return false
-  if (trustId) return true
-  const messageKeys = [
-    'date', 'message', 'text', 'raw', 'media', 'file', 'from_id', 'fromId', 'peer_id', 'peerId',
-    'reply_to', 'replyTo', 'edit_date', 'editDate', 'entities', 'views', 'forwards', 'out', 'post',
-    'grouped_id', 'groupedId', 'via_bot_id', 'viaBotId', 'ttl_period', 'ttlPeriod', 'caption', 'content'
-  ]
-  return messageKeys.some(key => Object.prototype.hasOwnProperty.call(obj, key))
-}
-
-function collectMessageIds(node, ids = [], contextKey = '') {
-  if (!node) return ids
-  if (Array.isArray(node)) {
-    const trustedArray = ['messages', 'message', 'items', 'list', 'data', 'result'].includes(String(contextKey || '').toLowerCase())
-    for (const item of node) {
-      if (looksLikeMessageObject(item, trustedArray)) {
-        const id = asSafeInteger(item.id ?? item.ID ?? item.message_id ?? item.messageID)
-        if (id !== null) ids.push(id)
-      }
-      collectMessageIds(item, ids, contextKey)
-    }
-    return ids
-  }
-  if (typeof node === 'object') {
-    for (const [key, value] of Object.entries(node)) collectMessageIds(value, ids, key)
-  }
-  return ids
-}
-
-function countMessages(json) {
-  const ids = collectMessageIds(json)
-  return Array.from(new Set(ids)).length
-}
-
-function extractMessageIds(json) {
-  return Array.from(new Set(collectMessageIds(json))).sort((a, b) => a - b)
-}
-
-function parseKeywords(input) {
-  if (!input) return []
-  if (Array.isArray(input)) return input.map(item => String(item).trim()).filter(Boolean)
-  return String(input)
-    .split(/\r?\n|,|，/)
-    .map(item => item.trim())
-    .filter(Boolean)
-}
-
-function escapeRegExp(text) {
-  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-function createKeywordMatcher(config) {
-  const keywords = parseKeywords(config.blockKeywordsText || config.blockKeywords)
-  if (!keywords.length) return null
-
-  const caseSensitive = Boolean(config.keywordCaseSensitive)
-  const regexMode = Boolean(config.keywordRegexMode)
-  const rules = keywords.map(keyword => {
-    if (regexMode) {
-      try {
-        return { raw: keyword, regex: new RegExp(keyword, caseSensitive ? 'm' : 'im') }
-      } catch {
-        return { raw: keyword, regex: new RegExp(escapeRegExp(keyword), caseSensitive ? 'm' : 'im') }
-      }
-    }
-    return { raw: keyword, keyword: caseSensitive ? keyword : keyword.toLowerCase() }
-  })
-
-  return function matchKeyword(text) {
-    const source = String(text || '')
-    const comparable = caseSensitive ? source : source.toLowerCase()
-    for (const rule of rules) {
-      if (rule.regex) {
-        if (rule.regex.test(source)) return rule.raw
-      } else if (comparable.includes(rule.keyword)) {
-        return rule.raw
-      }
-    }
-    return null
-  }
-}
-
-function collectTextCandidates(obj, depth = 0) {
-  if (!obj || depth > 5) return []
-  if (typeof obj === 'string') return [obj]
-  if (Array.isArray(obj)) return obj.flatMap(item => collectTextCandidates(item, depth + 1))
-  if (typeof obj !== 'object') return []
-
-  const preferredKeys = [
-    'message', 'Message', 'text', 'Text', 'caption', 'Caption', 'content', 'Content',
-    'raw_text', 'rawText', 'body', 'Body', 'title', 'Title', 'description', 'Description'
-  ]
-  const result = []
-  for (const key of preferredKeys) {
-    if (typeof obj[key] === 'string') result.push(obj[key])
-  }
-  for (const [key, value] of Object.entries(obj)) {
-    if (typeof value === 'string') {
-      // 尽量避免路径、文件名、URL、peer 等内部字段误伤。
-      if (/path|file|dir|url|thumb|mime|type|peer|chat|from|to/i.test(key)) continue
-      result.push(value)
-    } else if (value && typeof value === 'object') {
-      if (/media|entities|reply|forward|content|message|text|caption|raw/i.test(key)) {
-        result.push(...collectTextCandidates(value, depth + 1))
-      }
-    }
-  }
-  return result
-}
-
-function filterJsonByKeywords(json, config) {
-  const matcher = createKeywordMatcher(config)
-  if (!matcher) return { json, removed: 0, hitKeywords: [], hasKeywordRules: false }
-
-  let removed = 0
-  const hitKeywords = new Set()
-
-  function filterNode(node, contextKey = '') {
-    if (Array.isArray(node)) {
-      const trustedArray = ['messages', 'message', 'items', 'list', 'data', 'result'].includes(String(contextKey || '').toLowerCase())
-      const next = []
-      for (const item of node) {
-        if (looksLikeMessageObject(item, trustedArray)) {
-          const text = collectTextCandidates(item).join('\n')
-          const hit = matcher(text)
-          if (hit) {
-            removed += 1
-            hitKeywords.add(hit)
-            continue
-          }
-        }
-        const filtered = filterNode(item, contextKey)
-        if (filtered !== null && filtered !== undefined) next.push(filtered)
-      }
-      return next
-    }
-
-    if (node && typeof node === 'object') {
-      const next = {}
-      for (const [key, value] of Object.entries(node)) {
-        const filtered = filterNode(value, key)
-        if (filtered !== null && filtered !== undefined) next[key] = filtered
-      }
-      return next
-    }
-
-    return node
-  }
-
-  return { json: filterNode(json), removed, hitKeywords: Array.from(hitKeywords), hasKeywordRules: true }
-}
-
-function writeFilteredJsonIfNeeded(sourceFile, targetFile, config) {
-  const matcher = createKeywordMatcher(config)
-  if (!matcher) return { file: sourceFile, removed: 0, hitKeywords: [], hasKeywordRules: false }
-
-  const json = readJsonSafe(sourceFile)
-  if (!json) return { file: sourceFile, removed: 0, hitKeywords: [], hasKeywordRules: true }
-
-  const result = filterJsonByKeywords(json, config)
-  writeJsonSafe(targetFile, result.json)
-  return { file: targetFile, removed: result.removed, hitKeywords: result.hitKeywords, hasKeywordRules: true }
-}
-
 function normalizeConfig(input) {
   const config = input || {}
   const baseOutputDir = config.baseOutputDir || process.cwd()
@@ -242,6 +74,14 @@ function normalizeConfig(input) {
     desc: Boolean(config.desc),
     continueOnError: config.continueOnError !== false,
     blockKeywordsText: String(config.blockKeywordsText || '').trim(),
+    forwardFilterEnabled: config.forwardFilterEnabled !== false,
+    filterKeywordsText: String(config.filterKeywordsText || '').trim(),
+    filterKeywordAction: config.filterKeywordAction || 'drop-message',
+    filterKeywordReplacement: String(config.filterKeywordReplacement || ''),
+    removeLinks: Boolean(config.removeLinks),
+    blockImages: Boolean(config.blockImages),
+    blockVideos: Boolean(config.blockVideos),
+    blockTextOnly: Boolean(config.blockTextOnly),
     keywordCaseSensitive: Boolean(config.keywordCaseSensitive),
     keywordRegexMode: Boolean(config.keywordRegexMode),
     fallbackToDefaultTopicOnMsgIdInvalid: config.fallbackToDefaultTopicOnMsgIdInvalid !== false,
@@ -316,14 +156,18 @@ class CommentForwardWorker extends EventEmitter {
       let stdout = ''
       let stderr = ''
 
+      // 这两份字符串只用于失败时拼错误信息。
+      // 原来是无上限累积：导出大频道时 tdl 的进度输出能堆到几百 MB。
+      const keepTail = text => text.length > OUTPUT_TAIL_LIMIT ? text.slice(-OUTPUT_TAIL_LIMIT) : text
+
       child.stdout.on('data', data => {
         const text = data.toString()
-        stdout += text
+        stdout = keepTail(stdout + text)
         this.log(text, 'stdout')
       })
       child.stderr.on('data', data => {
         const text = data.toString()
-        stderr += text
+        stderr = keepTail(stderr + text)
         this.log(text, 'stderr')
       })
       child.on('error', err => {
@@ -565,11 +409,11 @@ class CommentForwardWorker extends EventEmitter {
           await this.exportSinglePost(id, postFile)
 
           const filteredPostFile = path.join(this.paths.filtered, `post_${id}.filtered.json`)
-          const postFilter = writeFilteredJsonIfNeeded(postFile, filteredPostFile, this.config)
+          const postFilter = filterAndCount(postFile, filteredPostFile, this.config)
           if (postFilter.removed > 0) {
             this.log(`主消息 ${id} 命中关键词，已屏蔽 ${postFilter.removed} 条；关键词：${postFilter.hitKeywords.join(' / ')}`, 'warning')
           }
-          const postCount = countMessages(readJsonSafe(postFilter.file))
+          const postCount = postFilter.count
           this.log(`主消息 ${id} 过滤后数量：${postCount}`, 'info')
           const postBlocked = postFilter.removed > 0 && postCount === 0
 
@@ -586,11 +430,11 @@ class CommentForwardWorker extends EventEmitter {
               this.progress({ current: index, total: ids.length, id, stage: 'export-comments' })
               await this.exportComments(id, commentsFile)
               const filteredCommentsFile = path.join(this.paths.filtered, `comments_${id}.filtered.json`)
-              commentsFilter = writeFilteredJsonIfNeeded(commentsFile, filteredCommentsFile, this.config)
+              commentsFilter = filterAndCount(commentsFile, filteredCommentsFile, this.config)
               if (commentsFilter.removed > 0) {
                 this.log(`主消息 ${id} 的评论区命中关键词，已屏蔽 ${commentsFilter.removed} 条；关键词：${commentsFilter.hitKeywords.join(' / ')}`, 'warning')
               }
-              commentCount = countMessages(readJsonSafe(commentsFilter.file))
+              commentCount = commentsFilter.count
               this.log(`主消息 ${id} 评论区过滤后数量：${commentCount}`, 'info')
 
               if (this.config.skipPostWhenNoComments && commentCount === 0) {
@@ -644,4 +488,4 @@ class CommentForwardWorker extends EventEmitter {
   }
 }
 
-module.exports = { CommentForwardWorker }
+module.exports = { CommentForwardWorker, filterAndCount, extractMessageIds }

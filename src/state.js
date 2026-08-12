@@ -1,5 +1,6 @@
-import { reactive } from 'vue'
+import { reactive, shallowReactive } from 'vue'
 import { normalizeTaskRecord, recoverInterruptedTask } from './taskState'
+import { previewConfig } from '../shared/appDefaults.mjs'
 
 const TASKS_KEY = 'hopetdl.tasks.v1'
 const SCHEDULES_KEY = 'hopetdl.schedules.v1'
@@ -37,13 +38,25 @@ function readStoredSchedules() {
 }
 
 export const appState = reactive({
-  config: {},
+  config: previewConfig(),
+  // 只存已换行的历史行，环形缓冲，写入统一走 logStore.appendLog。
   logs: [],
+  // 未换行的活动行（进度条），每个 taskId+level 只占一条，随时被覆盖。
+  liveLines: shallowReactive({}),
+  // 增量维护，避免每来一行就全量 filter 一遍日志数组。
+  logErrorCount: 0,
+  logVersion: 0,
+  // tdl 登录时用半块字符画的二维码，从日志流里单独抽出来整块渲染。
+  // 混在日志里会被换行和行高毁掉，扫不出来。
+  loginQr: null,
   tasks: readStoredTasks(),
   schedules: readStoredSchedules(),
   schedulerPaused: false,
+  // 对话列表可能上千条且每条带 topics 数组，内容只读、整体替换。
+  // 赋值时统一用 markRaw（见 chatCache.applyCacheInfo），避免给每一行建深层 Proxy。
   cachedChats: [],
   chatCacheMeta: null,
+  chatCacheVersion: 0,
   chatCacheLoading: false,
   recovery: recoveryInfo,
   /**
@@ -55,11 +68,15 @@ export const appState = reactive({
   selectedForwardRecord: null,
   selectedUploadRecord: null,
   selectedDownloadRecord: null,
+  selectedCommentForwardRecord: null,
   /**
    * 是否显示任务日志面板。当为 false 时隐藏日志面板，并在界面底部提供按钮重新展开。
    */
-  showLog: true,
-  activeView: 'dashboard',
+  // 日志抽屉默认收起：展开态会吃掉三分之一屏幕，而多数时候用户不看它。
+  showLog: false,
+  activeView: 'overview',
+  // 「新建任务」页当前选中的任务类型。
+  newTaskKind: 'export',
   /**
    * 当前主题，可选值为 'dark' 或 'light'。默认从 localStorage 中读取，若没有则默认为 dark。
    */

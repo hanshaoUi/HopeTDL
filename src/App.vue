@@ -1,31 +1,53 @@
 <script setup>
-import { defineAsyncComponent, onMounted, onUnmounted, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onUnmounted, watch } from 'vue'
 import { appState } from './state'
 import { naiveTheme, themeOverrides } from './ui/naive'
+import { appendLog, finalizeLogs } from './logStore'
+import { applyCacheInfo } from './chatCache'
 import { persistTasks, startTaskScheduler, updateTaskStatus } from './utils'
-import TaskLog from './components/TaskLog.vue'
+import LogDrawer from './components/LogDrawer.vue'
 import { isTaskFailed, isTaskRunning, TASK_STATE } from './taskState'
 
-const Dashboard = defineAsyncComponent(() => import('./views/Dashboard.vue'))
-const Login = defineAsyncComponent(() => import('./views/Login.vue'))
+const Overview = defineAsyncComponent(() => import('./views/Overview.vue'))
 const Chats = defineAsyncComponent(() => import('./views/Chats.vue'))
-const ExportMessages = defineAsyncComponent(() => import('./views/ExportMessages.vue'))
-const Forward = defineAsyncComponent(() => import('./views/Forward.vue'))
-const CommentForward = defineAsyncComponent(() => import('./views/CommentForward.vue'))
-const Download = defineAsyncComponent(() => import('./views/Download.vue'))
-const Upload = defineAsyncComponent(() => import('./views/Upload.vue'))
-const History = defineAsyncComponent(() => import('./views/History.vue'))
-const TaskCenter = defineAsyncComponent(() => import('./views/TaskCenter.vue'))
+const NewTask = defineAsyncComponent(() => import('./views/NewTask.vue'))
+const Tasks = defineAsyncComponent(() => import('./views/Tasks.vue'))
 const Settings = defineAsyncComponent(() => import('./views/Settings.vue'))
 
-const views = { dashboard: Dashboard, login: Login, chats: Chats, export: ExportMessages, forward: Forward, commentForward: CommentForward, download: Download, upload: Upload, history: History, taskCenter: TaskCenter, settings: Settings }
+const views = { overview: Overview, chats: Chats, newTask: NewTask, tasks: Tasks, settings: Settings }
 const nav = [
-  ['dashboard', '仪表盘'], ['login', '登录账号'], ['chats', '对话列表'], ['export', '导出消息'], ['forward', '转发消息'], ['commentForward', '评论区转发'], ['download', '下载媒体'], ['upload', '上传文件'], ['history', '历史记录'], ['taskCenter', '任务中心'], ['settings', '设置']
+  ['overview', '概览', '◎'],
+  ['chats', '对话', '☰'],
+  ['newTask', '新建任务', '＋'],
+  ['tasks', '任务', '≡'],
+  ['settings', '设置', '⚙']
 ]
+
+// 旧的视图名散落在托盘菜单、历史记录跳转和用户习惯里，这里统一映射到新导航。
+const legacyViews = {
+  dashboard: 'overview',
+  login: 'overview',
+  export: 'newTask',
+  forward: 'newTask',
+  commentForward: 'newTask',
+  download: 'newTask',
+  upload: 'newTask',
+  history: 'tasks',
+  taskCenter: 'tasks'
+}
+
+function resolveView(name) {
+  if (views[name]) return name
+  return legacyViews[name] || 'overview'
+}
 let stopScheduler = null
+let offLog = null
+let offDone = null
 let offNavigate = null
 let offSchedulerPaused = null
 let offTasksStopped = null
+
+const runningTaskCount = computed(() => appState.tasks.filter(isTaskRunning).length)
 
 function latestScheduleCheck() {
   const checks = appState.schedules
@@ -49,7 +71,7 @@ function syncAppStatus() {
 onMounted(async () => {
   const tdlApi = window.tdlApi
   if (appState.recovery?.interruptedCount) {
-    appState.logs.push({
+    appendLog({
       taskId: 'app-recovery',
       level: 'warning',
       text: `[恢复] 检测到 ${appState.recovery.interruptedCount} 个上次未完成的任务，已标记为“已中断”。请在任务中心决定是否重试。\n`
@@ -72,12 +94,17 @@ onMounted(async () => {
     // 忽略设置错误
   }
   if (!tdlApi) {
-    appState.logs.push({ taskId: 'app', level: 'warning', text: '[开发预览] 当前页面未运行在 Electron 中，tdl 操作不可用。\n' })
+    appendLog({ taskId: 'app', level: 'warning', text: '[开发预览] 当前页面未运行在 Electron 中，tdl 操作不可用。\n' })
     return
   }
 
-  tdlApi.onLog((data) => appState.logs.push(data))
-  tdlApi.onDone((data) => {
+  offLog = tdlApi.onLog((data) => appendLog(data))
+  offDone = tdlApi.onDone((data) => {
+    // 把该任务残留的未换行输出落成历史行，避免进度条最后一帧永远挂着。
+    finalizeLogs(data.taskId)
+    // 二维码是这个任务打印的，任务一结束它就失效了（登录成功、超时、或出错），
+    // 不该继续挂在界面上。
+    if (appState.loginQr?.taskId === data.taskId) appState.loginQr = null
     const existing = appState.tasks.find(t => t.id === data.taskId)
     if (existing?.state === TASK_STATE.STOPPED) {
       updateTaskStatus(data.taskId, TASK_STATE.STOPPED, { exitCode: data.code })
@@ -89,7 +116,7 @@ onMounted(async () => {
     })
   })
   offNavigate = tdlApi.onNavigate?.((view) => {
-    if (views[view]) appState.activeView = view
+    appState.activeView = resolveView(view)
   })
   offSchedulerPaused = tdlApi.onSchedulerPaused?.((paused) => {
     appState.schedulerPaused = !!paused
@@ -107,11 +134,9 @@ onMounted(async () => {
   // 第一次没有缓存会自动刷新一次；缓存未过期时只读取本地缓存，不再重复请求 tdl。
   appState.chatCacheLoading = true
   try {
-    const info = await tdlApi.ensureChatCache()
-    appState.cachedChats = Array.isArray(info?.chats) ? info.chats : []
-    appState.chatCacheMeta = info || null
+    applyCacheInfo(await tdlApi.ensureChatCache())
   } catch (err) {
-    appState.logs.push({ taskId: 'chat-cache', level: 'error', text: `[对话缓存] 初始化失败：${err?.message || err}\n` })
+    appendLog({ taskId: 'chat-cache', level: 'error', text: `[对话缓存] 初始化失败：${err?.message || err}\n` })
   } finally {
     appState.chatCacheLoading = false
   }
@@ -119,6 +144,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (stopScheduler) stopScheduler()
+  if (offLog) offLog()
+  if (offDone) offDone()
   if (offNavigate) offNavigate()
   if (offSchedulerPaused) offSchedulerPaused()
   if (offTasksStopped) offTasksStopped()
@@ -143,14 +170,18 @@ watch(() => appState.theme, (val) => {
   }
 })
 
+// 原来这里每次任务变更都要把全部任务和计划拼成字符串再比较。
+// 托盘/角标只关心几个计数，直接盯计数即可，省掉每次变更的全量遍历和字符串分配。
 watch(
-  () => ({
-    tasks: appState.tasks.map(task => `${task.id}:${task.status}`).join('|'),
-    schedules: appState.schedules.map(schedule => `${schedule.id}:${schedule.enabled}:${schedule.lastCheckedAt || ''}`).join('|'),
-    schedulerPaused: appState.schedulerPaused
-  }),
-  syncAppStatus,
-  { deep: false }
+  () => [
+    appState.tasks.length,
+    appState.tasks.filter(isTaskRunning).length,
+    appState.tasks.filter(isTaskFailed).length,
+    appState.schedules.length,
+    appState.schedules.filter(schedule => schedule.enabled).length,
+    appState.schedulerPaused
+  ].join(','),
+  syncAppStatus
 )
 </script>
 
@@ -160,25 +191,33 @@ watch(
       <n-dialog-provider>
         <div class="app-shell">
           <aside class="sidebar">
-            <div class="brand">HopeTDL</div>
-            <div class="brand-sub">tdl 图形化操作原型</div>
-            <div v-for="item in nav" :key="item[0]" class="nav-item" :class="{ active: appState.activeView === item[0] }" @click="appState.activeView = item[0]">
-              {{ item[1] }}
+            <div class="brand">
+              <span class="brand-mark">T</span>
+              <span class="brand-text">HopeTDL</span>
             </div>
+            <nav class="nav">
+              <button
+                v-for="item in nav"
+                :key="item[0]"
+                type="button"
+                class="nav-item"
+                :class="{ active: appState.activeView === item[0] }"
+                @click="appState.activeView = item[0]"
+              >
+                <span class="nav-icon">{{ item[2] }}</span>
+                <span class="nav-label">{{ item[1] }}</span>
+                <span v-if="item[0] === 'tasks' && runningTaskCount" class="nav-badge">{{ runningTaskCount }}</span>
+              </button>
+            </nav>
           </aside>
           <main class="main">
             <section class="content">
-              <KeepAlive>
+              <!-- 页面常驻会把组件树和 watcher 永久留在内存里，只缓存最近 3 个。 -->
+              <KeepAlive :max="3">
                 <component :is="views[appState.activeView]" />
               </KeepAlive>
             </section>
-            <n-button
-              v-if="!appState.showLog"
-              size="small"
-              class="show-log-button"
-              @click="appState.showLog = true"
-            >显示日志</n-button>
-            <TaskLog v-show="appState.showLog" />
+            <LogDrawer />
           </main>
         </div>
       </n-dialog-provider>
