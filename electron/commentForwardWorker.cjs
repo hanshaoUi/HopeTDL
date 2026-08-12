@@ -2,6 +2,12 @@ const fs = require('fs')
 const path = require('path')
 const { spawn } = require('child_process')
 const EventEmitter = require('events')
+const {
+  extractMessageIds,
+  isTrustedArrayKey,
+  looksLikeMessageObject,
+  messageIdOf
+} = require('./shared/messageJson.cjs')
 
 // 子进程输出只保留尾部这么多字符用于报错，其余丢弃。
 const OUTPUT_TAIL_LIMIT = 32 * 1024
@@ -39,50 +45,6 @@ function createStamp() {
   const d = new Date()
   const pad = n => String(n).padStart(2, '0')
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
-}
-
-function asSafeInteger(value) {
-  if (value === undefined || value === null || value === '') return null
-  const n = Number(value)
-  if (!Number.isFinite(n) || !Number.isSafeInteger(n)) return null
-  if (n < 0) return null
-  return n
-}
-
-function looksLikeMessageObject(obj, trustId = false) {
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false
-  const id = asSafeInteger(obj.id ?? obj.ID ?? obj.message_id ?? obj.messageID)
-  if (id === null) return false
-  if (trustId) return true
-  const messageKeys = [
-    'date', 'message', 'text', 'raw', 'media', 'file', 'from_id', 'fromId', 'peer_id', 'peerId',
-    'reply_to', 'replyTo', 'edit_date', 'editDate', 'entities', 'views', 'forwards', 'out', 'post',
-    'grouped_id', 'groupedId', 'via_bot_id', 'viaBotId', 'ttl_period', 'ttlPeriod', 'caption', 'content'
-  ]
-  return messageKeys.some(key => Object.prototype.hasOwnProperty.call(obj, key))
-}
-
-function collectMessageIds(node, ids = [], contextKey = '') {
-  if (!node) return ids
-  if (Array.isArray(node)) {
-    const trustedArray = ['messages', 'message', 'items', 'list', 'data', 'result'].includes(String(contextKey || '').toLowerCase())
-    for (const item of node) {
-      if (looksLikeMessageObject(item, trustedArray)) {
-        const id = asSafeInteger(item.id ?? item.ID ?? item.message_id ?? item.messageID)
-        if (id !== null) ids.push(id)
-      }
-      collectMessageIds(item, ids, contextKey)
-    }
-    return ids
-  }
-  if (typeof node === 'object') {
-    for (const [key, value] of Object.entries(node)) collectMessageIds(value, ids, key)
-  }
-  return ids
-}
-
-function extractMessageIds(json) {
-  return Array.from(new Set(collectMessageIds(json))).sort((a, b) => a - b)
 }
 
 function parseKeywords(input) {
@@ -163,7 +125,7 @@ function collectTextCandidates(obj, depth = 0) {
 // 同一趟里顺便统计保留下来的消息 ID，省掉外层「写完再读回来数一遍」的第二次解析。
 function filterTreeInPlace(node, contextKey, ctx) {
   if (Array.isArray(node)) {
-    const trustedArray = ['messages', 'message', 'items', 'list', 'data', 'result'].includes(String(contextKey || '').toLowerCase())
+    const trustedArray = isTrustedArrayKey(contextKey)
     let write = 0
     for (let read = 0; read < node.length; read += 1) {
       const item = node[read]
@@ -176,7 +138,7 @@ function filterTreeInPlace(node, contextKey, ctx) {
             continue
           }
         }
-        const id = asSafeInteger(item.id ?? item.ID ?? item.message_id ?? item.messageID)
+        const id = messageIdOf(item)
         if (id !== null) ctx.ids.add(id)
       }
       filterTreeInPlace(item, contextKey, ctx)

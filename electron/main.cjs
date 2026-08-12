@@ -3,6 +3,7 @@ const path = require('path')
 const fs = require('fs')
 const { spawn } = require('child_process')
 const { CommentForwardWorker } = require('./commentForwardWorker.cjs')
+const { extractMessageIds } = require('./shared/messageJson.cjs')
 
 const isDev = !app.isPackaged
 const devServerUrl = 'http://127.0.0.1:5174'
@@ -517,50 +518,6 @@ function fetchChatsFromTdl(event, { filter = '', cache = false, reason = 'refres
 }
 
 
-function asSafeInteger(value) {
-  if (value === undefined || value === null || value === '') return null
-  const n = Number(value)
-  if (!Number.isFinite(n) || !Number.isSafeInteger(n)) return null
-  if (n < 0) return null
-  return n
-}
-
-function looksLikeMessageObject(obj, trustId = false) {
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false
-  const id = asSafeInteger(obj.id ?? obj.ID ?? obj.message_id ?? obj.messageID)
-  if (id === null) return false
-  if (trustId) return true
-  const messageKeys = [
-    'date', 'message', 'text', 'raw', 'media', 'file', 'from_id', 'fromId', 'peer_id', 'peerId',
-    'reply_to', 'replyTo', 'edit_date', 'editDate', 'entities', 'views', 'forwards', 'out', 'post',
-    'grouped_id', 'groupedId', 'via_bot_id', 'viaBotId', 'ttl_period', 'ttlPeriod'
-  ]
-  return messageKeys.some(key => Object.prototype.hasOwnProperty.call(obj, key))
-}
-
-function collectMessageIds(node, ids = [], contextKey = '') {
-  if (!node) return ids
-
-  if (Array.isArray(node)) {
-    const trustedArray = ['messages', 'message', 'items', 'list', 'data', 'result'].includes(String(contextKey || '').toLowerCase())
-    for (const item of node) {
-      if (looksLikeMessageObject(item, trustedArray)) {
-        const id = asSafeInteger(item.id ?? item.ID ?? item.message_id ?? item.messageID)
-        if (id !== null) ids.push(id)
-      }
-      collectMessageIds(item, ids, contextKey)
-    }
-    return ids
-  }
-
-  if (typeof node === 'object') {
-    for (const [key, value] of Object.entries(node)) {
-      collectMessageIds(value, ids, key)
-    }
-  }
-  return ids
-}
-
 function analyzeExportFile(filePath) {
   if (!filePath || !fs.existsSync(filePath)) {
     return { ok: false, reason: '输出文件不存在', filePath }
@@ -569,8 +526,8 @@ function analyzeExportFile(filePath) {
     const content = fs.readFileSync(filePath, 'utf8')
     if (!content.trim()) return { ok: false, reason: '输出文件为空', filePath }
     const json = JSON.parse(content)
-    const ids = collectMessageIds(json).filter(n => Number.isSafeInteger(n) && n >= 0)
-    const unique = Array.from(new Set(ids)).sort((a, b) => a - b)
+    // collectMessageIds 内部已经用 asSafeInteger 过滤过，这里不需要再筛一遍。
+    const unique = extractMessageIds(json)
     if (!unique.length) {
       return { ok: false, reason: '没有在导出 JSON 中识别到消息 ID', filePath }
     }

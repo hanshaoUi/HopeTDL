@@ -91,7 +91,13 @@ localStorage 还有个硬限制：5MB，且是同步 API。任务记录里存着
 `outputPathForRange`、`inputRangeFromArgs` 这一整套都是在做这件事。
 
 而且 `buildGlobalArgs`（main.cjs）和 `globalArgs`（utils.js）是两份一模一样的实现，
-`looksLikeMessageObject` / `collectMessageIds` 在 main.cjs 和 worker.cjs 里也各有一份。
+`looksLikeMessageObject` / `collectMessageIds` 在 main.cjs 和 worker.cjs 里也各有一份
+（后者已在阶段 2 合并到 `electron/shared/messageJson.cjs`）。
+
+> **关于 `buildGlobalArgs` / `globalArgs` 这一对重复**：没有把它抽成跨进程共享模块。
+> 主进程是 CJS、渲染端是 vite 打包的 ESM，为一个函数搭跨运行时的共享层不划算；
+> 更重要的是阶段 4 之后渲染端根本不该再拼命令行参数——那份实现会被整个删掉。
+> 现在为它建共享模块，等于给一个注定要消失的东西加基础设施。
 
 **建议**：引入 JobSpec 作为唯一的任务描述。
 
@@ -122,6 +128,8 @@ localStorage 还有个硬限制：5MB，且是同步 API。任务记录里存着
 ```
 electron/
   main.cjs              仅：窗口、托盘、IPC 注册
+  shared/
+    messageJson.cjs     ✅ 消息 JSON 的识别与 ID 提取（已落地）
   runtime/
     taskQueue.cjs       并发控制、状态机、快照
     tasks/
@@ -140,8 +148,8 @@ src/                    纯展示：订阅快照，提交 JobSpec
 
 | 阶段 | 内容 | 风险 |
 |---|---|---|
-| ✅ 1 | 内存与性能止血（本次已完成，见 PERF-NOTES.md） | 低，无行为变更 |
-| 2 | `shared/` 抽公共逻辑，消除四处重复实现 | 低 |
+| ✅ 1 | 内存与性能止血（见 PERF-NOTES.md） | 低，无行为变更 |
+| ✅ 2 | `electron/shared/messageJson.cjs`：消息 JSON 解析逻辑合并为唯一实现 | 低 |
 | 3 | JobSpec 模型 + 各页面改为提交 spec | 中，要逐页改 |
 | 4 | 主进程 TaskQueue + scheduler 迁移，渲染端改订阅 | 中高，收益最大 |
 | 5 | store 收敛与 localStorage 数据迁移 | 中，需要迁移代码 |
