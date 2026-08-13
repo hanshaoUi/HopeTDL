@@ -5,6 +5,7 @@ const { spawn } = require('child_process')
 const { CommentForwardWorker } = require('./commentForwardWorker.cjs')
 const { extractMessageIds } = require('./shared/messageJson.cjs')
 const { filterAndCount, shouldSkipForward } = require('./shared/messageFilter.cjs')
+const { createErrorTails } = require('./shared/errorTail.cjs')
 const jobSpecModule = import('../shared/jobSpec.mjs')
 
 const isDev = !app.isPackaged
@@ -22,6 +23,8 @@ let appStatus = {
   lastScheduleCheck: ''
 }
 const activeTdlChildren = new Map()
+// 任务失败时随 tdl:done 一起带回渲染端的「最后几行输出」，见 shared/errorTail.cjs。
+const errorTails = createErrorTails()
 
 // tdl 的 stdout 是高频小块（进度条每秒几十上百次重绘）。
 // 每块都单独走一次 IPC + 一次渲染端 push，会把主进程和渲染进程一起拖死。
@@ -408,26 +411,34 @@ function runTdl(event, payload) {
   activeTdlChildren.set(taskId, child)
 
   child.stdout.on('data', data => {
-    sendLog(event.sender, { taskId, level: 'stdout', text: data.toString() })
+    const text = data.toString()
+    errorTails.record(taskId, 'stdout', text)
+    sendLog(event.sender, { taskId, level: 'stdout', text })
   })
   child.stderr.on('data', data => {
-    sendLog(event.sender, { taskId, level: 'stderr', text: data.toString() })
+    const text = data.toString()
+    errorTails.record(taskId, 'stderr', text)
+    sendLog(event.sender, { taskId, level: 'stderr', text })
   })
   child.on('error', err => {
     activeTdlChildren.delete(taskId)
+    errorTails.drop(taskId)
     sendLog(event.sender, { taskId, level: 'error', text: `\n[启动失败] ${err.message}\n[建议] 打包后的 macOS App 可能找不到终端里的 tdl。请在设置里把 tdl 路径改成 /opt/homebrew/bin/tdl 或 /usr/local/bin/tdl；本版也会自动尝试这些路径。\n` })
     flushAllLogBuffers()
-    if (!event.sender.isDestroyed()) event.sender.send('tdl:done', { taskId, code: -1 })
+    if (!event.sender.isDestroyed()) event.sender.send('tdl:done', { taskId, code: -1, errorTail: `启动失败：${err.message}` })
     for (const file of cleanupFiles) {
       try { fs.rmSync(file, { force: true }) } catch {}
     }
   })
   child.on('close', code => {
     activeTdlChildren.delete(taskId)
+    // 成功的任务不需要原因，直接把尾巴丢掉，别让它留在内存里。
+    if (code === 0) errorTails.drop(taskId)
+    const errorTail = code === 0 ? '' : errorTails.take(taskId)
     sendLog(event.sender, { taskId, level: code === 0 ? 'info' : 'error', text: `\n[任务结束] exit code: ${code}\n` })
     // 任务结束时立即冲刷，保证 done 之前日志已经到齐。
     flushAllLogBuffers()
-    if (!event.sender.isDestroyed()) event.sender.send('tdl:done', { taskId, code })
+    if (!event.sender.isDestroyed()) event.sender.send('tdl:done', { taskId, code, errorTail })
     for (const file of cleanupFiles) {
       try { fs.rmSync(file, { force: true }) } catch {}
     }
@@ -712,7 +723,13 @@ function startCommentForward(event, payload = {}) {
     if (!sender.isDestroyed()) sender.send('comment-forward:status', data)
     if (['done', 'error', 'stopped'].includes(data.status)) {
       flushAllLogBuffers()
-      if (!sender.isDestroyed()) sender.send('tdl:done', { taskId, code: data.status === 'done' ? 0 : 1 })
+      if (!sender.isDestroyed()) {
+        sender.send('tdl:done', {
+          taskId,
+          code: data.status === 'done' ? 0 : 1,
+          errorTail: data.status === 'error' ? String(data.message || '') : ''
+        })
+      }
       currentCommentForwardWorker = null
     }
   })

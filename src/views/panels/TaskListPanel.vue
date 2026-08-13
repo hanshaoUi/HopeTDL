@@ -74,6 +74,20 @@ function taskSummary(task) {
   return task.summary || '-'
 }
 
+// 失败任务的摘要现在就是「失败分类：错误原因」，行内不必再把同一句话说第二遍。
+// 只有摘要没覆盖到的部分才另起一行（比如调用方自己写死的摘要 + 另有错误原文）。
+function failureLabelText(task) {
+  const label = String(task?.failureLabel || '')
+  if (!label || taskSummary(task).startsWith(`${label}：`)) return ''
+  return label
+}
+
+function extraErrorText(task) {
+  const message = String(task?.errorMessage || '').trim()
+  if (!message || taskSummary(task).includes(message)) return ''
+  return message
+}
+
 function scheduleSummary(schedule) {
   if (!schedule) return ''
   return schedule.lastDecision || schedule.lastStatus || '未运行'
@@ -489,11 +503,11 @@ async function retryInterruptedTasks() {
               <div class="table-title">{{ task.title || task.type }}</div>
               <div class="row-details truncate-cell">{{ taskCommand(task) }}</div>
               <div class="row-details">摘要：{{ taskSummary(task) }}</div>
-              <div v-if="task.failureLabel" class="row-details error-text">失败分类：{{ task.failureLabel }}</div>
+              <div v-if="failureLabelText(task)" class="row-details error-text">失败分类：{{ failureLabelText(task) }}</div>
               <div v-if="task.failedCount" class="row-details error-text">
                 失败 {{ task.failedCount }} 条：{{ (task.failedIds || []).join(', ') }}
               </div>
-              <div v-if="task.errorMessage" class="row-details error-text">{{ task.errorMessage }}</div>
+              <div v-if="extraErrorText(task)" class="row-details error-text">{{ extraErrorText(task) }}</div>
             </td>
             <td>{{ task.type }}</td>
             <td>

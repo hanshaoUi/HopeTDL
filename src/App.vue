@@ -110,9 +110,13 @@ onMounted(async () => {
       updateTaskStatus(data.taskId, TASK_STATE.STOPPED, { exitCode: data.code })
       return
     }
+    // 主进程留了子进程最后几行输出。失败时把它当作错误原因：
+    // 任务列表因此能显示「网络或代理：context deadline exceeded」而不是干巴巴一个退出码。
+    // 空尾巴时不要覆盖表单自己写好的 errorMessage。
     updateTaskStatus(data.taskId, data.code === 0 ? TASK_STATE.SUCCESS : TASK_STATE.FAILED, {
       finishedAt: new Date().toLocaleString(),
-      exitCode: data.code
+      exitCode: data.code,
+      ...(data.code !== 0 && data.errorTail ? { errorMessage: data.errorTail } : {})
     })
   })
   offNavigate = tdlApi.onNavigate?.((view) => {

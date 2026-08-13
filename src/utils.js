@@ -110,6 +110,8 @@ export function createTask(type, args, title, extra = {}) {
     finishedAt: extra.finishedAt || '',
     exitCode: extra.exitCode ?? null,
     summary: extra.summary || '',
+    // 调用方自己写的摘要不参与按状态重算；没写就交给 normalizeTaskRecord 派生。
+    summaryAuto: !extra.summary,
     ...extra,
     id
   })
@@ -125,6 +127,7 @@ export function updateTaskStatus(taskId, status, extra = {}) {
   Object.assign(task, {
     ...normalizeTaskRecord({
       ...task,
+      summaryAuto: extra.summary ? false : task.summaryAuto !== false,
       ...extra,
       state,
       status: taskStatusLabel(state),

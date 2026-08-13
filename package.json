@@ -6,7 +6,7 @@
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "concurrently -k \"vite\" \"wait-on tcp:5174 && electron .\"",
-    "test": "node --test test/*.test.mjs",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test test/*.test.mjs",
     "build": "vite build",
     "start": "electron .",
     "build:dist": "npm run build && electron-builder",
