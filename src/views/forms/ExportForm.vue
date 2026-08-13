@@ -8,6 +8,7 @@ import { appState } from '../../state.js'
 import { chatId as getChatId, chatTitle as getChatTitle, findChatByValue } from '../../chatCache'
 import { readJson, saveForwardRecord, touchRecentChat, writeJson } from '../../historyStore'
 import { useAppliedRecord } from '../../useAppliedRecord'
+import { resolveRangeStart } from '../../exportRange'
 
 const chat = ref('')
 const type = ref('id')
@@ -19,6 +20,8 @@ const selectedSourceChat = ref(null)
 const pendingExportTaskId = ref('')
 const pendingExportRecord = ref(null)
 const autoOutput = ref(true)
+const latestLoading = ref(false)
+const latestCheck = ref(null)
 const autoForward = ref(false)
 const forwardPeer = ref('')
 const forwardThread = ref('')
@@ -123,7 +126,9 @@ async function defaultOutputFile() {
   const row = sourceChatRow()
   const title = getChatTitle(row) || chat.value || 'chat'
   const id = getChatId(row) || chat.value || 'unknown'
-  const folder = safeName(`${title}_${id}`)
+  // 手输 @xxx（缓存里没有这个对话）时 title 和 id 是同一个值，
+  // 拼起来会得到 @xxx_@xxx 这种目录名。
+  const folder = safeName(title === id ? title : `${title}_${id}`)
   const name = `export_${safeName(type.value)}_${safeName(inputToken())}_${timestampForFile()}.json`
   return joinPath(joinPath(baseDir, folder), name)
 }
@@ -269,6 +274,53 @@ function useChatLastInput() {
 }
 
 
+// 增量导出的两个端点：起点软件一直记着（上次导出 JSON 里的 maxId + 1），
+// 终点以前只能把上界写成 int64 最大值，界面上看不到频道真实的最新 ID。
+// 这里复用定时任务用的那条链路（tdl chat export -T last -i 1 → 取最大 ID）。
+async function readLatestMessageId() {
+  const peer = String(chat.value || '').trim()
+  if (!peer) {
+    message.error('请先选择或填写源对话')
+    return
+  }
+  if (!window.tdlApi?.checkChatLatestMessage) {
+    message.error('当前不在 Electron 环境中，无法读取')
+    return
+  }
+
+  latestLoading.value = true
+  try {
+    const result = await window.tdlApi.checkChatLatestMessage(peer)
+    if (!result?.ok) {
+      latestCheck.value = null
+      message.error(`读取最新 ID 失败：${result?.message || '未知错误'}`)
+      return
+    }
+    const latest = Number(result.latestMessageId || 0)
+    // 你已经填了起始值就以你的为准，这个按钮只负责补上终点。
+    const start = resolveRangeStart(input.value, chatLastRecord.value)
+    latestCheck.value = {
+      chat: peer,
+      latest,
+      start,
+      checkedAt: result.checkedAt || new Date().toLocaleString()
+    }
+    if (!start) {
+      message.info(`频道最新消息 ID 是 ${latest}。这个聊天还没有导出记录，请自己填起始 ID`)
+      return
+    }
+    if (start > latest) {
+      message.warning(`没有新消息：最新 ID ${latest}，上次已经导到 ${start - 1}`)
+      return
+    }
+    type.value = 'id'
+    input.value = `${start},${latest}`
+    message.success(`已填入 ${start},${latest}（共 ${latest - start + 1} 个 ID）`)
+  } finally {
+    latestLoading.value = false
+  }
+}
+
 function applyRecordAndSmart(record, mode = 'all') {
   applyRecord(record, mode)
   autoOutput.value = true
@@ -368,6 +420,8 @@ onUnmounted(() => {
 
 // 切换命名空间后重新读取对应历史
 watch(nsKey, () => loadMemory())
+// 换了聊天，上一个聊天的最新 ID 就没意义了，别让它留在界面上冒充当前值。
+watch(chat, () => { latestCheck.value = null })
 watch([chat, type, input], () => updateSmartOutput())
 
 const spec = computed(() => ({
@@ -496,9 +550,31 @@ async function run() {
           <n-select v-model:value="type" :options="typeOptions" />
         </n-form-item>
         <n-form-item label="消息范围">
-          <div style="display:flex; gap:10px; align-items:center; width:100%">
-            <n-input v-model:value="input" placeholder="例如 1213,1500 或 100" style="flex:1" />
-            <n-button @click="useChatLastInput">读取该聊天</n-button>
+          <div style="width:100%">
+            <div style="display:flex; gap:10px; align-items:center; width:100%">
+              <n-input v-model:value="input" placeholder="例如 1213,1500 或 100" style="flex:1" />
+              <n-button @click="useChatLastInput">读取该聊天</n-button>
+              <n-button
+                type="primary"
+                secondary
+                :loading="latestLoading"
+                :disabled="latestLoading || !chat"
+                @click="readLatestMessageId"
+              >读取最新 ID</n-button>
+            </div>
+            <div v-if="latestCheck" class="mini-muted" style="margin-top:6px">
+              频道最新 ID：<strong>{{ latestCheck.latest }}</strong>
+              <template v-if="latestCheck.start">
+                · 上次导到 {{ latestCheck.start - 1 }}
+                <template v-if="latestCheck.start > latestCheck.latest">· 暂无新消息</template>
+                <template v-else>· 本次 {{ latestCheck.latest - latestCheck.start + 1 }} 个 ID</template>
+              </template>
+              <template v-else>· 该聊天没有上次导出记录</template>
+              · {{ latestCheck.checkedAt }}
+            </div>
+            <div v-else class="mini-muted" style="margin-top:6px">
+              「读取最新 ID」会向 Telegram 取一次该聊天的最后一条消息，用它当结束值；起始值取上次导到的位置 + 1。
+            </div>
           </div>
         </n-form-item>
       </div>
