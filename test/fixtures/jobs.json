@@ -1,0 +1,12 @@
+[
+  {"kind":"login","type":"qr"},
+  {"kind":"chat-list","filter":"title contains '测试'"},
+  {"kind":"export","chat":"@demo","selector":{"type":"all"},"all":true,"raw":true,"withContent":true,"output":"/tmp/目录 with spaces/export.json"},
+  {"kind":"export","chat":"-100123","selector":{"type":"id","input":"1,9223372036854775807"},"withContent":true},
+  {"kind":"export","chat":"@demo","reply":123,"selector":{"type":"last","input":"10"}},
+  {"kind":"forward","from":"/tmp/a b.json","target":{"peer":"@target","thread":12},"mode":"clone","dryRun":true,"silent":true,"single":true,"desc":true,"edit":"text"},
+  {"kind":"forward","from":"/tmp/a.json","target":{"routerFile":"/tmp/router file.txt"}},
+  {"kind":"upload","chat":"@demo","path":"/tmp/a b.mp4","topic":12,"caption":"中文标题","photo":true,"remove":true},
+  {"kind":"download","directory":"/tmp/媒体","include":"mp4","exclude":"jpg","template":"{{ .FileName }}","group":true,"skipSame":true,"rewriteExt":true,"serve":true,"port":8080,"takeout":true,"desc":true,"resumeMode":"continue","source":{"type":"url","items":["https://t.me/a/1","https://t.me/a/2"]}},
+  {"kind":"download","resumeMode":"restart","source":{"type":"file","items":["/tmp/a b.json","/tmp/c.json"]}}
+]

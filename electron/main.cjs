@@ -369,6 +369,7 @@ function runTdl(event, payload) {
     if (sourceFile && fs.existsSync(sourceFile)) {
       const filteredFile = path.join(app.getPath('temp'), 'HopeTDL', 'filtered', `${taskId}.json`)
       const result = filterAndCount(sourceFile, filteredFile, config)
+      skipEmptyForward = shouldSkipForward(result)
       if (result.enabled) {
         taskArgs[sourceIndex + 1] = result.file
         cleanupFiles.push(result.file)
@@ -378,7 +379,6 @@ function runTdl(event, payload) {
           level: 'info',
           text: `[全局过滤] 删除消息 ${result.removed} 条（内容类型 ${typeCount} 条），移除链接 ${result.linksRemoved} 处，保留 ${result.count} 条。\n`
         })
-        skipEmptyForward = shouldSkipForward(result)
       }
     }
   }
@@ -828,6 +828,19 @@ async function checkEnvironment() {
 }
 
 ipcMain.handle('config:get', () => readConfig())
+ipcMain.handle('migration:export', async (_, localStorage = {}) => {
+  const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: path.join(app.getPath('documents'), 'HopeTDL-migration.json'),
+    filters: [{ name: 'JSON', extensions: ['json'] }]
+  })
+  if (canceled || !filePath) return { cancelled: true }
+  const data = {
+    format: 'hopetdl-migration', version: 1,
+    config: readConfig(), chatCache: readChatCacheStore(), localStorage
+  }
+  fs.writeFileSync(filePath, JSON.stringify(data), 'utf8')
+  return { ok: true, filePath }
+})
 ipcMain.handle('config:set', (_, config) => saveConfig(config))
 ipcMain.handle('tdl:run', (event, payload) => runTdl(event, payload))
 ipcMain.handle('job:run', (event, payload) => runJob(event, payload))

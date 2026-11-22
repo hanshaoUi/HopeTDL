@@ -12,6 +12,15 @@ const RENDER_TAIL = 400
 
 const searchText = ref('')
 const selectedTaskId = ref('')
+const diskTail = ref('')
+watch(selectedTaskId, async id => {
+  diskTail.value = ''
+  if (!id || !window.tdlApi?.nativeRuntime) return
+  try {
+    const tail = await window.tdlApi.logTail(id)
+    if (selectedTaskId.value === id) diskTail.value = tail
+  } catch (error) { message.error(String(error)) }
+})
 const autoScroll = ref(true)
 const logBody = ref(null)
 
@@ -154,7 +163,11 @@ watch(() => appState.logVersion, async () => {
       </div>
 
       <div ref="logBody" class="log-body">
-        <div v-if="!appState.logs.length && !liveLogs.length" class="log-empty">暂无日志。运行任务后会实时显示 tdl 输出。</div>
+        <template v-if="diskTail">
+          <div class="log-truncated">磁盘日志末尾（最多 32 KB；包含窗口隐藏或重启前的输出）</div>
+          <pre class="log-line">{{ diskTail }}</pre>
+        </template>
+        <div v-if="!diskTail && !appState.logs.length && !liveLogs.length" class="log-empty">暂无日志。运行任务后会实时显示 tdl 输出。</div>
         <div v-else-if="!visibleLogs.length && !liveLogs.length" class="log-empty">当前筛选条件下没有日志。</div>
         <div v-if="truncated" class="log-truncated">
           仅显示最近 {{ visibleLogs.length }} 行（缓冲上限 {{ MAX_LOG_LINES }} 行）。「复制全部」仍会导出缓冲区内的全部匹配行。

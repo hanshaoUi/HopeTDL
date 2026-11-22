@@ -1,4 +1,5 @@
 <script setup>
+import { useWorkbenchPreview } from '../../composables/useWorkbenchPreview'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { confirmHtml, message } from '../../ui/naive'
 import { commandTextForSpec, defaultOutputDir, runJob, runJobAndWait } from '../../utils'
@@ -6,7 +7,7 @@ import CommandPreview from '../../components/CommandPreview.vue'
 import ChatSelect from '../../components/ChatSelect.vue'
 import { appState } from '../../state.js'
 import { chatId as getChatId, chatTitle as getChatTitle, findChatByValue } from '../../chatCache'
-import { readJson, saveForwardRecord, touchRecentChat, writeJson } from '../../historyStore'
+import { dedupeExportRecords, mergeExportRecord, readJson, saveForwardRecord, touchRecentChat, writeJson } from '../../historyStore'
 import { useAppliedRecord } from '../../useAppliedRecord'
 import { resolveRangeStart } from '../../exportRange'
 
@@ -180,7 +181,8 @@ function copyText(text, successText = '已复制') {
 function loadMemory() {
   const allMemory = readAllMemory()
   const ns = nsKey.value
-  exportMemory.value = allMemory[ns] || { last: null, chats: {}, records: [] }
+  const memory = allMemory[ns] || { last: null, chats: {}, records: [] }
+  exportMemory.value = { ...memory, records: dedupeExportRecords(memory.records || []) }
 }
 
 function makeRecord(extra = {}) {
@@ -216,15 +218,7 @@ function saveMemory(record = makeRecord()) {
     }
   }
 
-  const records = current.records || []
-  const duplicated = records.findIndex(item =>
-    item.chat === record.chat &&
-    item.type === record.type &&
-    item.input === record.input &&
-    item.output === record.output
-  )
-  if (duplicated >= 0) records.splice(duplicated, 1)
-  current.records = [record, ...records].slice(0, 30)
+  current.records = mergeExportRecord(current.records, record)
 
   allMemory[ns] = current
   writeAllMemory(allMemory)
@@ -530,6 +524,7 @@ async function run() {
   pendingExportTaskId.value = started?.taskId || ''
   pendingExportRecord.value = record
 }
+useWorkbenchPreview(spec)
 </script>
 <template>
   <div class="card">

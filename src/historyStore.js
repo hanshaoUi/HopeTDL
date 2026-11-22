@@ -1,5 +1,6 @@
 import { appState } from './state'
 import { chatId, chatTitle, chatUsername } from './chatCache'
+import localStorage from './storage'
 
 export const EXPORT_MEMORY_KEY = 'hopetdl.export.memory.v1'
 export const FORWARD_HISTORY_KEY = 'hopetdl.forward.history.v1'
@@ -7,6 +8,7 @@ export const UPLOAD_HISTORY_KEY = 'hopetdl.upload.history.v1'
 export const DOWNLOAD_HISTORY_KEY = 'hopetdl.download.history.v1'
 export const COMMENT_FORWARD_HISTORY_KEY = 'hopetdl.commentforward.history.v1'
 export const CHAT_PREFS_KEY = 'hopetdl.chat.prefs.v1'
+export const CHAT_CATEGORIES_KEY = 'hopetdl.chat.categories.v1'
 
 export function nsKey() {
   return String(appState.config?.ns || 'default')
@@ -75,7 +77,8 @@ export function chatLabelFromRow(row) {
 
 export function getExportMemory(ns = nsKey()) {
   const all = readJson(EXPORT_MEMORY_KEY, {})
-  return all[ns] || { last: null, chats: {}, records: [] }
+  const memory = all[ns] || { last: null, chats: {}, records: [] }
+  return { ...memory, records: dedupeExportRecords(memory.records || []) }
 }
 
 export function setExportMemory(memory, ns = nsKey()) {
@@ -100,7 +103,8 @@ export function findExportMemoryForChat(chat, ns = nsKey()) {
 
 function getScopedHistory(key, ns = nsKey()) {
   const all = readJson(key, {})
-  return all[ns] || { records: [] }
+  const history = all[ns] || { records: [] }
+  return { ...history, records: dedupeScopedRecords(history.records || []) }
 }
 
 function setScopedHistory(key, history, ns = nsKey()) {
@@ -114,11 +118,37 @@ function saveScopedRecord(key, record, ns = nsKey(), limit = 80) {
   const records = history.records || []
   const id = record.id || `${record.type || 'record'}_${Date.now()}`
   const next = { id, ns, time: record.time || new Date().toLocaleString(), createdAt: record.createdAt || Date.now(), ...record }
-  const duplicated = records.findIndex(item => item.id === id)
-  if (duplicated >= 0) records.splice(duplicated, 1)
-  history.records = [next, ...records].slice(0, limit)
+  history.records = [next, ...records.filter(item => item.id !== id && scopedRecordKey(item) !== scopedRecordKey(next))].slice(0, limit)
   setScopedHistory(key, history, ns)
   return next
+}
+
+function scopedRecordKey(record) {
+  return record.command ? `command:${record.command}` : `id:${record.id || ''}`
+}
+
+function dedupeScopedRecords(records) {
+  const seen = new Set()
+  return records.filter(record => {
+    const key = scopedRecordKey(record)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+export function dedupeExportRecords(records) {
+  const seen = new Set()
+  return records.filter(record => {
+    const key = record.output ? `output:${record.output}` : `command:${record.command || ''}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+export function mergeExportRecord(records, record, limit = 30) {
+  return dedupeExportRecords([record, ...(records || [])]).slice(0, limit)
 }
 
 export function getForwardRecords(ns = nsKey()) {
@@ -174,6 +204,100 @@ function setChatPrefs(prefs, ns = nsKey()) {
   const all = readJson(CHAT_PREFS_KEY, {})
   all[ns] = prefs || { favorites: {}, recent: [] }
   writeJson(CHAT_PREFS_KEY, all)
+}
+
+function getChatCategoryState(ns = nsKey()) {
+  const all = readJson(CHAT_CATEGORIES_KEY, {})
+  const state = all[ns] || { categories: [], assignments: {} }
+  return {
+    categories: Array.isArray(state.categories) ? state.categories : [],
+    assignments: state.assignments && typeof state.assignments === 'object' ? state.assignments : {}
+  }
+}
+
+function setChatCategoryState(state, ns = nsKey()) {
+  const all = readJson(CHAT_CATEGORIES_KEY, {})
+  all[ns] = state || { categories: [], assignments: {} }
+  writeJson(CHAT_CATEGORIES_KEY, all)
+}
+
+function categoryName(value) {
+  return String(value || '').trim()
+}
+
+function categoryId() {
+  if (globalThis.crypto?.randomUUID) return `category_${globalThis.crypto.randomUUID()}`
+  return `category_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+function chatCategoryKey(rowOrValue) {
+  const value = typeof rowOrValue === 'object' ? chatValueFromRow(rowOrValue) : rowOrValue
+  return normalizeChatKey(value)
+}
+
+export function getChatCategories(ns = nsKey()) {
+  return getChatCategoryState(ns).categories.slice()
+}
+
+export function createChatCategory(value, ns = nsKey()) {
+  const name = categoryName(value)
+  if (!name) throw new Error('分类名称不能为空')
+  const state = getChatCategoryState(ns)
+  if (state.categories.some(item => categoryName(item.name).toLocaleLowerCase() === name.toLocaleLowerCase())) {
+    throw new Error('分类名称已存在')
+  }
+  const item = { id: categoryId(), name, createdAt: Date.now() }
+  state.categories.push(item)
+  setChatCategoryState(state, ns)
+  return item
+}
+
+export function renameChatCategory(id, value, ns = nsKey()) {
+  const name = categoryName(value)
+  if (!name) throw new Error('分类名称不能为空')
+  const state = getChatCategoryState(ns)
+  const item = state.categories.find(category => category.id === id)
+  if (!item) return null
+  if (state.categories.some(category => category.id !== id && categoryName(category.name).toLocaleLowerCase() === name.toLocaleLowerCase())) {
+    throw new Error('分类名称已存在')
+  }
+  item.name = name
+  item.updatedAt = Date.now()
+  setChatCategoryState(state, ns)
+  return { ...item }
+}
+
+export function deleteChatCategory(id, ns = nsKey()) {
+  const state = getChatCategoryState(ns)
+  const nextCategories = state.categories.filter(category => category.id !== id)
+  if (nextCategories.length === state.categories.length) return false
+  const assignments = {}
+  for (const [key, ids] of Object.entries(state.assignments)) {
+    const nextIds = (Array.isArray(ids) ? ids : []).filter(categoryIdValue => categoryIdValue !== id)
+    if (nextIds.length) assignments[key] = nextIds
+  }
+  setChatCategoryState({ categories: nextCategories, assignments }, ns)
+  return true
+}
+
+export function getChatCategoryIds(rowOrValue, ns = nsKey()) {
+  const key = chatCategoryKey(rowOrValue)
+  if (!key) return []
+  const state = getChatCategoryState(ns)
+  const validIds = new Set(state.categories.map(item => item.id))
+  return (Array.isArray(state.assignments[key]) ? state.assignments[key] : []).filter(id => validIds.has(id))
+}
+
+export function setChatCategoryIds(rowOrValue, ids, ns = nsKey()) {
+  const key = chatCategoryKey(rowOrValue)
+  if (!key) return []
+  const state = getChatCategoryState(ns)
+  const validIds = new Set(state.categories.map(item => item.id))
+  const nextIds = Array.from(new Set(Array.isArray(ids) ? ids : [])).filter(id => validIds.has(id))
+  if (nextIds.length) state.assignments[key] = nextIds
+  else delete state.assignments[key]
+  setChatCategoryState(state, ns)
+  return nextIds
 }
 
 export function getFavoriteMap(ns = nsKey()) {

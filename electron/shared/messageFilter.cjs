@@ -205,11 +205,11 @@ function filterAndCount(sourceFile, targetFile, config = {}) {
     fs.mkdirSync(path.dirname(targetFile), { recursive: true })
     fs.writeFileSync(targetFile, JSON.stringify(result.json, null, 2), 'utf8')
   }
-  return { ...result, file: result.enabled ? targetFile : sourceFile, hasKeywordRules: keywordRules(config).length > 0 }
+  return { ...result, file: result.enabled ? targetFile : sourceFile, hasKeywordRules: keywordRules(config).length > 0, filterError: false }
 }
 
 function shouldSkipForward(result) {
-  return Boolean(result?.enabled && result.count === 0)
+  return Boolean(result?.count === 0 && (result.enabled || result.filterError === false))
 }
 
 module.exports = { filterMessageJson, filterAndCount, mediaKindOf, parseKeywords, shouldSkipForward }

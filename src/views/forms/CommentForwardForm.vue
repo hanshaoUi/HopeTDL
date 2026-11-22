@@ -1,4 +1,5 @@
 <script setup>
+import { useWorkbenchPreview } from '../../composables/useWorkbenchPreview'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { message, confirmHtml } from '../../ui/naive'
 import ChatSelect from '../../components/ChatSelect.vue'
@@ -48,11 +49,12 @@ const targetTopicOptions = computed(() => targetTopics.value.map(topic => ({
   label: `${topic.title || topic.id} / ${topic.id}`,
   value: String(topic.id)
 })))
-const running = computed(() => status.value === 'running')
+const running = computed(() => ['queued','running'].includes(status.value))
 const progressPercent = computed(() => progress.value.total ? Math.round((progress.value.current / progress.value.total) * 100) : 0)
 
 const statusText = computed(() => ({
   idle: '待开始',
+  queued: '排队中',
   running: '运行中',
   done: '已完成',
   stopped: '已停止',
@@ -253,15 +255,20 @@ async function startTask() {
 
   const taskId = `comment_forward_${Date.now()}`
   currentTaskId.value = taskId
-  status.value = 'running'
+  status.value = window.tdlApi?.nativeRuntime ? 'queued' : 'running'
   progress.value = { current: 0, total: 0, id: '', stage: '' }
-  const result = await runJob(spec.value, '评论区顺序转发', {
+  let result
+  try { result = await runJob(spec.value, '评论区顺序转发', {
     id: taskId,
     command: previewCommand.value,
     sourceChat: sourceChat.value,
     targetChat: targetChat.value,
     dryRun: dryRun.value
-  })
+  }) } catch (err) {
+    status.value = 'error'
+    message.error(`任务启动失败：${err?.message || err}`)
+    return
+  }
   if (!result?.ok) {
     status.value = 'error'
     updateTaskStatus(taskId, '失败', { errorMessage: result?.message || '任务启动失败' })
@@ -316,141 +323,40 @@ onUnmounted(() => {
   if (offProgress) offProgress()
   if (offStatus) offStatus()
 })
+const workbench = useWorkbenchPreview(spec, { taskId: currentTaskId, status, progress })
 </script>
 
 <template>
-
-  <div class="card">
-    <div class="comment-forward-head">
-      <div>
-        <div class="card-title">任务参数</div>
-        <div class="mini-muted">当前状态：{{ statusText }}；进度：{{ progress.current || 0 }} / {{ progress.total || 0 }}；阶段：{{ stageText }}</div>
+  <div class="card comment-task-card">
+    <div v-if="currentTaskId" class="comment-live-status" role="status"><span>当前状态：{{statusText}} · {{progress.current||0}} / {{progress.total||0}} · {{stageText}}</span><n-progress :percentage="progressPercent" :stroke-width="4" :show-indicator="false" /></div>
+    <n-form label-placement="left" label-width="76px" size="small">
+      <section class="form-section"><h2 class="form-section-title">来源与目标</h2>
+        <n-form-item label="源对话"><ChatSelect v-model="sourceChat" placeholder="选择或输入 @source / ID" button-text="更新" @select="handleSourceSelect" /></n-form-item>
+        <n-form-item label="目标对话"><ChatSelect v-model="targetChat" placeholder="选择或输入 @target / ID" button-text="更新" @select="handleTargetSelect" /></n-form-item>
+      </section>
+      <section class="form-section"><h2 class="form-section-title">消息范围</h2>
+        <n-form-item label="起始 ID"><n-input v-model:value="startId" placeholder="留空 = 从头" /></n-form-item>
+        <n-form-item label="结束 ID"><n-input v-model:value="endId" placeholder="留空 = 到末尾" /></n-form-item>
+      </section>
+      <div class="compact-checks">
+        <n-checkbox v-model:checked="dryRun">演练模式</n-checkbox><n-checkbox v-model:checked="resume">断点续跑</n-checkbox><n-checkbox v-model:checked="includeComments">包含评论区</n-checkbox><n-checkbox v-model:checked="forwardMain">转发主消息</n-checkbox><n-checkbox v-model:checked="forwardComments">转发评论区</n-checkbox>
       </div>
-      <n-progress :percentage="progressPercent" :stroke-width="12" style="width:260px" />
-    </div>
-
-    <n-form label-width="130px">
-      <n-form-item label="源频道 / 群组">
-        <ChatSelect
-          v-model="sourceChat"
-          placeholder="从对话列表选择，或手动输入 @source / ID"
-          button-text="更新缓存"
-          @select="handleSourceSelect"
-        />
-      </n-form-item>
-
-      <div class="grid-2">
-        <n-form-item label="起始消息 ID">
-          <n-input v-model:value="startId" placeholder="可空，例如 2313" />
-        </n-form-item>
-        <n-form-item label="结束消息 ID">
-          <n-input v-model:value="endId" placeholder="可空，例如 2500；只测单条就和起始相同" />
-        </n-form-item>
-      </div>
-
-      <div class="grid-2">
-        <n-form-item label="目标对话">
-          <ChatSelect
-            v-model="targetChat"
-            placeholder="从对话列表选择目标，或手动输入 @target / ID"
-            button-text="更新缓存"
-            @select="handleTargetSelect"
-          />
-        </n-form-item>
-        <n-form-item label="目标话题">
-          <n-select
-            v-if="targetTopics.length"
-            v-model:value="targetTopicId"
-            filterable
-            tag
-            default-first-option
-            clearable
-            :options="targetTopicOptions"
-            placeholder="从该聊天的话题中选择，或手动输入"
-            style="width:100%"
-          />
-          <n-input v-else v-model:value="targetTopicId" placeholder="可空，例如 68549" />
-        </n-form-item>
-      </div>
-
-      <div class="grid-2">
-        <n-form-item label="转发模式">
-          <n-radio-group v-model:value="mode">
-            <n-radio-button value="direct">direct</n-radio-button>
-            <n-radio-button value="clone">clone</n-radio-button>
-          </n-radio-group>
-        </n-form-item>
-        <n-form-item label="每条间隔">
-          <n-input-number v-model:value="delayMs" :min="0" :max="60000" :step="500" />
-        </n-form-item>
-      </div>
-
-      <n-form-item label="基础选项">
-        <n-checkbox v-model:checked="includeComments">处理评论区</n-checkbox>
-        <n-checkbox v-model:checked="forwardMain">转发主消息</n-checkbox>
-        <n-checkbox v-model:checked="forwardComments">转发评论区</n-checkbox>
-        <n-checkbox v-model:checked="exportOnly">仅导出不转发</n-checkbox>
-        <n-checkbox v-model:checked="dryRun">演练模式</n-checkbox>
-      </n-form-item>
-
-      <div class="advanced-toggle">
-        <n-button size="small" secondary @click="advancedMode = !advancedMode">
-          {{ advancedMode ? '收起高级选项' : '展开高级选项' }}
-        </n-button>
-        <span class="mini-muted">关键词、续跑、缓存目录和失败处理都在高级选项里。</span>
-      </div>
-
-      <template v-if="advancedMode">
-      <n-form-item label="工作目录">
-        <div style="display:flex; gap:10px; align-items:center; width:100%">
-          <n-input v-model:value="workDir" placeholder="可空，默认在设置的输出目录下生成 comment-forward/时间戳" style="flex:1" />
-          <n-button @click="pickWorkDir">选择</n-button>
-          <n-button :disabled="!currentWorkDir && !workDir" @click="openWorkDir">打开</n-button>
-        </div>
-      </n-form-item>
-
-      <n-form-item label="屏蔽关键词">
-        <div style="width:100%">
-          <n-input
-            v-model:value="blockKeywordsText"
-            type="textarea"
-            :rows="5"
-            placeholder="一行一个关键词，例如：\n广告\n推广\n返佣"
-          />
-          <div class="action-row" style="margin-top:8px">
-            <n-button size="small" @click="fillDemoKeywords">填入示例</n-button>
-            <span class="mini-muted">命中关键词的主消息 / 评论会从 filtered JSON 中删除后再转发。</span>
-          </div>
-        </div>
-      </n-form-item>
-
-      <n-form-item label="安全 / 续跑">
-        <n-checkbox v-model:checked="resume">读取 progress.json 续跑</n-checkbox>
-        <n-checkbox v-model:checked="skipExistingExport">已有缓存 JSON 跳过导出</n-checkbox>
-        <n-checkbox v-model:checked="continueOnError">单条失败后继续</n-checkbox>
-        <n-checkbox v-model:checked="desc">倒序处理</n-checkbox>
-      </n-form-item>
-
-      <n-form-item label="关键词选项">
-        <n-checkbox v-model:checked="skipCommentsWhenPostBlocked">主消息命中时跳过评论区</n-checkbox>
-        <n-checkbox v-model:checked="keywordCaseSensitive">区分大小写</n-checkbox>
-        <n-checkbox v-model:checked="keywordRegexMode">按正则匹配</n-checkbox>
-      </n-form-item>
-      </template>
+      <button type="button" class="adv-toggle" :aria-expanded="advancedMode" @click="advancedMode=!advancedMode"><span class="adv-chev" :class="{open:advancedMode}">▶</span>高级选项<span class="advanced-hint">过滤、话题、延迟…</span></button>
+      <section v-if="advancedMode" class="comment-advanced">
+        <n-form-item label="话题 ID"><n-select v-if="targetTopics.length" v-model:value="targetTopicId" filterable tag clearable :options="targetTopicOptions" placeholder="选择话题或输入 ID" /><n-input v-else v-model:value="targetTopicId" placeholder="留空 = 默认聊天" /></n-form-item>
+        <n-form-item label="模式"><n-radio-group v-model:value="mode"><n-radio-button value="direct">direct</n-radio-button><n-radio-button value="clone">clone</n-radio-button></n-radio-group></n-form-item>
+        <n-form-item label="延迟"><div class="inline-field"><n-input-number v-model:value="delayMs" :min="0" :step="500" style="width:120px" /><span class="mini-muted">ms · 每组消息的处理间隔</span></div></n-form-item>
+        <n-form-item label="屏蔽词"><n-input v-model:value="blockKeywordsText" type="textarea" :rows="3" placeholder="广告, 推广, 加群；也可一行一个" /></n-form-item>
+        <div class="compact-checks advanced-checks"><n-checkbox v-model:checked="continueOnError">失败后继续</n-checkbox><n-checkbox v-model:checked="exportOnly">仅导出不转发</n-checkbox><n-checkbox v-model:checked="skipCommentsWhenPostBlocked">屏蔽主消息时跳过评论</n-checkbox><n-checkbox v-model:checked="skipExistingExport">已有缓存 JSON 跳过导出</n-checkbox><n-checkbox v-model:checked="desc">倒序处理</n-checkbox><n-checkbox v-model:checked="keywordCaseSensitive">区分大小写</n-checkbox><n-checkbox v-model:checked="keywordRegexMode">按正则匹配</n-checkbox></div>
+        <n-form-item label="工作目录"><div class="inline-field grow"><n-input v-model:value="workDir" placeholder="留空自动生成；续跑请选择原目录" /><n-button @click="pickWorkDir">选择</n-button></div></n-form-item>
+        <button type="button" class="btn sm ghost" @click="fillDemoKeywords">填入示例关键词</button>
+      </section>
     </n-form>
-
     <CommandPreview :command="previewCommand" />
-    <div style="height:16px"></div>
-    <n-alert v-if="dryRun" type="warning"  :show-icon="true" :closable="false" title="当前是演练模式：会真实导出主消息列表用于识别 ID，但不会逐条导出 / 转发。要测试过滤结果，可取消演练并勾选“仅导出不转发”。" />
-    <div style="height:16px"></div>
-    <div class="action-row">
-      <n-button type="primary" :disabled="running" @click="startTask">{{ running ? '运行中...' : '开始任务' }}</n-button>
-      <n-button type="error" :disabled="!running" @click="stopTask">停止</n-button>
-      <n-button :disabled="!currentWorkDir && !workDir" @click="openWorkDir">打开缓存目录</n-button>
-      <n-button secondary :disabled="!currentWorkDir && !workDir" @click="loadProgressSummary()">读取失败记录</n-button>
-    </div>
+    <div v-if="dryRun" class="mode-explanation">演练会读取主消息列表，但不逐条导出、不发送，也不写已完成断点。</div>
+    <div v-else-if="exportOnly" class="mode-explanation">仅导出：读取并过滤主消息与评论，保存到本地，不发送。</div>
+    <div class="form-actions"><n-button type="primary" :disabled="running" @click="startTask">{{running?'处理中…':dryRun?'开始演练':'运行'}}</n-button><n-button :disabled="!running" @click="stopTask">停止</n-button><span class="flex-sp" /><n-button size="tiny" quaternary :disabled="!currentWorkDir&&!workDir" @click="openWorkDir">打开缓存</n-button><n-button size="tiny" quaternary :disabled="!currentWorkDir&&!workDir" @click="loadProgressSummary()">失败记录</n-button><button v-if="workbench" class="btn sm ghost" @click="workbench.plan()">存为计划</button></div>
   </div>
-
   <div v-if="progressSummary" class="card">
     <div class="card-title">失败记录</div>
     <div class="mini-muted">

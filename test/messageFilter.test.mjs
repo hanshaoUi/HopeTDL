@@ -71,3 +71,8 @@ test('forward is skipped when enabled filters leave no messages', () => {
   assert.equal(shouldSkipForward({ enabled: true, count: 1 }), false)
   assert.equal(shouldSkipForward({ enabled: false, count: 0 }), false)
 })
+
+test('forward is skipped when an unfiltered export JSON contains no messages', () => {
+  assert.equal(shouldSkipForward({ enabled: false, count: 0, filterError: false }), true)
+  assert.equal(shouldSkipForward({ enabled: false, count: 0, filterError: true }), false)
+})

@@ -14,7 +14,7 @@ function exportArgs(spec) {
   pushValue(args, '-c', spec.chat)
   if (spec.reply !== undefined && spec.reply !== null && spec.reply !== '') {
     pushValue(args, '--reply', spec.reply)
-  } else if (spec.selector) {
+  } else if (spec.selector && spec.selector.type !== 'all') {
     pushValue(args, '-T', spec.selector.type)
     pushValue(args, '-i', spec.selector.input)
   }

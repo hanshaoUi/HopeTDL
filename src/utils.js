@@ -1,6 +1,7 @@
 import { appState } from './state'
 import { message } from './ui/naive'
 import { appendLog } from './logStore'
+import localStorage from './storage'
 import {
   createIncrementalSpec,
   sourceChatForSpec,
@@ -41,6 +42,7 @@ export function commandText(args) {
 }
 
 export function commandTextForSpec(spec) {
+  if (spec?.kind === 'workflow') return spec.steps.map(commandTextForSpec).join('\n')
   return commandText(toArgs(spec))
 }
 
@@ -80,10 +82,12 @@ const writeSchedules = createDebouncedWriter(SCHEDULES_KEY, () =>
   appState.schedules.slice(0, 100))
 
 export function persistTasks() {
+  if (window.tdlApi?.nativeRuntime) return
   writeTasks()
 }
 
 export function persistSchedules() {
+  if (window.tdlApi?.nativeRuntime) return
   writeSchedules()
 }
 
@@ -136,18 +140,27 @@ export function updateTaskStatus(taskId, status, extra = {}) {
   })
   if (!task.finishedAt && isTaskFinished(task)) task.finishedAt = new Date().toLocaleString()
   persistTasks()
+  if (window.tdlApi?.nativeRuntime && ('failedCount' in extra || 'failedIds' in extra)) {
+    window.tdlApi.taskMetadata(taskId, extra).catch(window.tdlApi.reportError)
+  }
   return task
 }
 
 export async function runTask(type, args, title, extra = {}) {
   const task = createTask(type, args, title, extra)
-  return window.tdlApi.run({ taskId: task.id, args })
+  return window.tdlApi.run({ taskId: task.id, args, task: JSON.parse(JSON.stringify(task)) })
 }
 
 export async function runJob(spec, title, extra = {}) {
-  const args = spec?.kind === 'comment-forward' ? [] : toArgs(spec)
+  const args = ['comment-forward','workflow'].includes(spec?.kind) ? [] : toArgs(spec)
   const task = createTask(spec.kind, args, title, { ...extra, spec })
-  return window.tdlApi.runJob({ taskId: task.id, spec })
+  try {
+    return await window.tdlApi.runJob({ taskId: task.id, spec: JSON.parse(JSON.stringify(spec)), task: JSON.parse(JSON.stringify(task)) })
+  } catch (error) {
+    if (window.tdlApi.nativeRuntime) appState.tasks = appState.tasks.filter(t=>t.id!==task.id)
+    else updateTaskStatus(task.id, TASK_STATE.FAILED, {errorMessage:String(error)})
+    throw error
+  }
 }
 
 export async function copyTaskCommand(task) {
@@ -158,7 +171,15 @@ export async function copyTaskCommand(task) {
 
 export async function retryTask(task) {
   if (!task) return null
-  if (task.spec) return runJob(task.spec, task.title || task.type)
+  if (task.spec) {
+    const spec = JSON.parse(JSON.stringify(task.spec))
+    if (spec.kind === 'comment-forward' && task.state !== TASK_STATE.SUCCESS && (spec.workDir || task.workDir)) {
+      spec.workDir = spec.workDir || task.workDir
+      spec.resume = true
+      spec.skipExistingExport = true
+    }
+    return runJob(spec, task.title || task.type, { workflowDraft:task.workflowDraft, sourceLabel:task.sourceLabel, targetLabel:task.targetLabel, outputPath:task.outputPath, dryRun:task.dryRun })
+  }
   return runTask(task.type, task.args || [], task.title || task.type)
 }
 
@@ -310,7 +331,7 @@ export function runTaskAndWait(type, args, title, extra = {}) {
         if (data.code === 0) resolve(data)
         else reject(new Error(`任务失败，退出码 ${data.code}`))
       })
-      await window.tdlApi.run({ taskId, args })
+      await window.tdlApi.run({ taskId, args, task: JSON.parse(JSON.stringify(task)) })
     } catch (err) {
       if (offDone) offDone()
       reject(err)
@@ -330,7 +351,7 @@ export function runJobAndWait(spec, title, extra = {}) {
         if (data.code === 0) resolve(data)
         else reject(new Error(`任务失败，退出码 ${data.code}`))
       })
-      await window.tdlApi.runJob({ taskId: task.id, spec })
+      await window.tdlApi.runJob({ taskId: task.id, spec: JSON.parse(JSON.stringify(spec)), task: JSON.parse(JSON.stringify(task)) })
     } catch (err) {
       if (offDone) offDone()
       reject(err)
@@ -338,11 +359,11 @@ export function runJobAndWait(spec, title, extra = {}) {
   })
 }
 
-export function createScheduleFromTask(task, options = {}) {
-  if (!task || !Array.isArray(task.args) || !task.args.length) {
+export async function createScheduleFromTask(task, options = {}) {
+  if (!task || ((!Array.isArray(task.args) || !task.args.length) && !(window.tdlApi?.nativeRuntime && task.spec))) {
     throw new Error('该任务没有可重放的 tdl 参数，不能创建定时任务')
   }
-  if (task.type === 'comment-forward') {
+  if (task.type === 'comment-forward' && !window.tdlApi?.nativeRuntime) {
     throw new Error('评论区转发暂不支持从任务中心定时重放，请使用普通 tdl 任务创建计划')
   }
 
@@ -352,6 +373,7 @@ export function createScheduleFromTask(task, options = {}) {
     type: task.type,
     args: [...task.args],
     spec: task.spec ? JSON.parse(JSON.stringify(task.spec)) : null,
+    metadata: JSON.parse(JSON.stringify({workflowDraft:task.workflowDraft,sourceLabel:task.sourceLabel,targetLabel:task.targetLabel,outputPath:task.outputPath,dryRun:task.dryRun})),
     templateOutputPath: task.spec?.output || outputPathFromArgs(task.args),
     templateFromPath: task.spec?.from || fromPathFromArgs(task.args),
     mode: options.mode || 'once',
@@ -373,6 +395,10 @@ export function createScheduleFromTask(task, options = {}) {
   }
   schedule.nextRunAt = nextRunAfter(schedule, schedule.mode === 'interval' ? Date.now() : 0)
   scheduleEvent(schedule, 'created', `计划已创建：${schedule.lastStatus}`)
+  if (window.tdlApi?.nativeRuntime) {
+    await window.tdlApi.saveSchedule(schedule)
+    return schedule
+  }
   appState.schedules.unshift(schedule)
   persistSchedules()
   return schedule
@@ -385,11 +411,13 @@ export function updateSchedule(scheduleId, patch = {}) {
   if (patch.mode || patch.runAt || patch.intervalMinutes) {
     schedule.nextRunAt = nextRunAfter(schedule, schedule.mode === 'interval' ? Date.now() : 0)
   }
+  if (window.tdlApi?.nativeRuntime) return window.tdlApi.saveSchedule(schedule).catch(window.tdlApi.reportError)
   persistSchedules()
   return schedule
 }
 
 export function deleteSchedule(scheduleId) {
+  if (window.tdlApi?.nativeRuntime) return window.tdlApi.deleteSchedule(scheduleId)
   appState.schedules = appState.schedules.filter(item => item.id !== scheduleId)
   persistSchedules()
 }
@@ -401,11 +429,13 @@ export function toggleSchedule(schedule) {
     schedule.nextRunAt = nextRunAfter(schedule, schedule.mode === 'interval' ? Date.now() : 0)
   }
   scheduleEvent(schedule, schedule.enabled ? 'enabled' : 'disabled', schedule.enabled ? '计划已启用' : '计划已停用')
+  if (window.tdlApi?.nativeRuntime) return window.tdlApi.saveSchedule(schedule).catch(window.tdlApi.reportError)
   persistSchedules()
   return schedule
 }
 
 export async function runScheduledTaskNow(schedule) {
+  if (window.tdlApi?.nativeRuntime) return window.tdlApi.runSchedule(schedule.id)
   if (!schedule || !Array.isArray(schedule.args)) return null
   if (schedule.chain === 'export-forward') {
     const exportSpec = schedule.nextExportSpec || null
@@ -529,6 +559,7 @@ async function shouldRunSchedule(schedule) {
 }
 
 export function startTaskScheduler() {
+  if (window.tdlApi?.nativeRuntime) return () => {}
   let checking = false
   const tick = async () => {
     if (checking || !window.tdlApi || appState.schedulerPaused) return

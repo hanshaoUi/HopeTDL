@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
+import AppIcon from '../components/AppIcon.vue'
 import { appState } from '../state'
 import { commandTextForSpec, runJob } from '../utils'
 import { message } from '../ui/naive'
@@ -14,6 +15,9 @@ const envResult = ref(null)
 const loginSpec = computed(() => ({ kind: 'login', type: loginType.value }))
 const latestTasks = computed(() => appState.tasks.slice(0, 6))
 const runningCount = computed(() => appState.tasks.filter(isTaskRunning).length)
+const slots = computed(() => Math.max(1,Number(appState.config.maxConcurrentTasks || 2)))
+const occupiedSlots = computed(() => appState.tasks.filter(isTaskRunning).length)
+const enabledPlans = computed(() => appState.schedules.filter(s=>s.enabled).length)
 const failedCount = computed(() => appState.tasks.filter(isTaskFailed).length)
 
 const tdlCheck = computed(() => envResult.value?.checks?.find(item => item.key === 'tdl') || null)
@@ -52,8 +56,8 @@ onMounted(checkEnvironment)
 
 <template>
   <header class="page-head">
-    <h1 class="page-title">概览</h1>
-    <p class="page-desc">当前环境状态和最近的任务。要做事从「新建任务」开始，要找对话去「对话」。</p>
+    <h1 class="page-title">主页</h1>
+    <p class="page-desc">当前环境和最近任务。</p>
   </header>
 
   <n-alert
@@ -66,47 +70,20 @@ onMounted(checkEnvironment)
   />
 
   <div class="stat-row">
-    <div class="stat">
-      <div class="label">命名空间</div>
-      <div class="value">{{ appState.config.ns || 'default' }}</div>
-    </div>
-    <div class="stat">
-      <div class="label">运行中任务</div>
-      <div class="value">{{ runningCount }}</div>
-    </div>
-    <div class="stat" :class="{ warn: failedCount }">
-      <div class="label">失败任务</div>
-      <div class="value">{{ failedCount }}</div>
-    </div>
-    <div class="stat">
-      <div class="label">对话缓存</div>
-      <div class="value">{{ appState.chatCacheMeta?.count || 0 }}</div>
-    </div>
+    <button class="stat-card info" @click="goto('tasks')"><div class="stat-label">运行中</div><div class="stat-value">{{runningCount}}</div></button>
+    <button class="stat-card" :class="{warn:failedCount}" @click="goto('tasks')"><div class="stat-label">失败</div><div class="stat-value">{{failedCount}}</div></button>
+    <button class="stat-card" @click="goto('plans')"><div class="stat-label">计划</div><div class="stat-value">{{enabledPlans}} / {{appState.schedules.length}}</div></button>
+    <button class="stat-card" @click="goto('chats')"><div class="stat-label">对话缓存</div><div class="stat-value">{{appState.chatCacheMeta?.count||0}}</div></button>
   </div>
-
-  <!-- 环境没就绪时，登录和自检是主角；就绪后收成一行状态。 -->
-  <section class="card" :class="{ 'card-attention': !envReady }">
-    <div class="card-head">
-      <div>
-        <div class="card-title">环境状态</div>
-        <div class="mini-muted">
-          <template v-if="envLoading">检查中…</template>
-          <template v-else-if="!envResult">尚未检查</template>
-          <template v-else-if="envReady">tdl 可用：{{ tdlCheck.detail }}</template>
-          <template v-else>tdl 不可用：{{ tdlCheck?.detail || '未检测到' }}</template>
-        </div>
-      </div>
-      <div class="action-row">
-        <n-button size="small" :loading="envLoading" @click="checkEnvironment">重新检查</n-button>
-        <n-button size="small" quaternary @click="goto('settings')">去设置</n-button>
-      </div>
+  <section class="card">
+    <div class="card-head"><div><h2 class="card-title">tdl 环境</h2><div class="card-hint">外部 tdl 执行 · Rust 后台调度</div></div><div class="action-row"><span class="state-label" :class="envReady?'success':'queued'">{{envLoading?'检查中':envReady?'tdl 可用':'待检查 / 不可用'}}</span><button class="btn sm" @click="goto('settings')">设置</button><n-button size="tiny" :loading="envLoading" @click="checkEnvironment">重新检查</n-button></div></div>
+    <div class="session-card"><div class="session-avatar">{{(appState.config.ns||'hope')[0].toUpperCase()}}</div><div class="session-info"><div class="session-name">当前命名空间</div><div class="session-meta">任务、对话缓存与历史按此空间管理</div></div><span class="session-ns">{{appState.config.ns||'hope'}}</span><button class="btn sm" @click="goto('settings')">切换</button></div>
+    <div class="tdl-info-grid">
+      <div class="tdl-info-item"><AppIcon name="tasks" :size="16" /><div><div class="tdl-info-label">版本 / 可执行文件</div><div class="tdl-info-value env-version">{{tdlCheck?.detail||appState.config.tdlPath||'尚未检查'}}</div></div></div>
+      <div class="tdl-info-item"><AppIcon name="transfer" :size="16" /><div><div class="tdl-info-label">代理</div><div class="tdl-info-value">{{appState.config.proxy||'未配置 · 直连'}}</div></div></div>
+      <div class="tdl-info-item"><AppIcon name="info" :size="16" /><div><div class="tdl-info-label">API 限流状态</div><div class="tdl-info-value mini-muted">tdl 未提供实时额度数据</div></div></div>
+      <div class="tdl-info-item"><AppIcon name="clock" :size="16" /><div><div class="tdl-info-label">并发上限</div><div class="tdl-info-value">{{slots}} slots（{{Math.max(0,slots-occupiedSlots)}} 空闲）</div></div></div>
     </div>
-
-    <div v-if="envResult && !envReady" class="env-hint">
-      找不到 tdl 可执行文件。装好后如果仍然找不到，去「设置」把 tdl 路径填成完整路径，例如
-      <code>/opt/homebrew/bin/tdl</code>。
-    </div>
-
     <div class="login-row">
       <span class="login-label">登录账号</span>
       <n-radio-group v-model:value="loginType" size="small">
@@ -156,16 +133,16 @@ onMounted(checkEnvironment)
     </div>
     <div class="quick-grid">
       <button type="button" class="quick-item" @click="goto('newTask', 'export')">
-        <span class="quick-icon">⤓</span><span>导出消息</span>
+        <AppIcon class="quick-icon" name="download" :size="18" /><span>导出消息</span>
       </button>
       <button type="button" class="quick-item" @click="goto('newTask', 'download')">
-        <span class="quick-icon">⭳</span><span>下载媒体</span>
+        <AppIcon class="quick-icon" name="media" :size="18" /><span>下载媒体</span>
       </button>
       <button type="button" class="quick-item" @click="goto('newTask', 'commentForward')">
-        <span class="quick-icon">⇉</span><span>评论区转发</span>
+        <AppIcon class="quick-icon" name="comments" :size="18" /><span>评论区转发</span>
       </button>
-      <button type="button" class="quick-item" @click="goto('chats')">
-        <span class="quick-icon">☰</span><span>浏览对话</span>
+      <button type="button" class="quick-item" @click="goto('newTask', 'upload')">
+        <AppIcon class="quick-icon" name="upload" :size="18" /><span>上传文件</span>
       </button>
     </div>
   </section>

@@ -29,11 +29,14 @@ export async function loadChatCache({ ensure = false, refresh = false } = {}) {
       return applyCacheInfo(info)
     } finally {
       appState.chatCacheLoading = false
-      if (inflight === request) inflight = null
     }
   })()
   inflight = request
-  return request
+  try {
+    return await request
+  } finally {
+    if (inflight === request) inflight = null
+  }
 }
 
 export function chatId(row) {

@@ -220,7 +220,7 @@ async function createSchedule() {
     }
   }
   try {
-    createScheduleFromTask(task, {
+    await createScheduleFromTask(task, {
       mode: scheduleDraft.value.mode,
       triggerMode: scheduleDraft.value.triggerMode,
       watchChat,
@@ -255,12 +255,12 @@ async function removeSchedule(schedule) {
   } catch {
     return
   }
-  deleteSchedule(schedule.id)
+  await deleteSchedule(schedule.id)
   message.success('已删除定时任务')
 }
 
 async function clearFinished() {
-  const removableCount = appState.tasks.filter(task => !isTaskRunning(task)).length
+  const removableCount = appState.tasks.filter(task => !isTaskRunning(task) && task.state !== TASK_STATE.QUEUED).length
   if (!removableCount) {
     message.info('没有可清理的已完成任务')
     return
@@ -276,8 +276,11 @@ async function clearFinished() {
     return
   }
 
-  appState.tasks = appState.tasks.filter(isTaskRunning)
-  persistTasks()
+  if (window.tdlApi?.nativeRuntime) await window.tdlApi.clearFinished()
+  else {
+    appState.tasks = appState.tasks.filter(isTaskRunning)
+    persistTasks()
+  }
   message.success('已清理已完成任务')
 }
 
@@ -522,7 +525,7 @@ async function retryInterruptedTasks() {
                 <n-button size="small" tertiary @click="openTaskDetails(task)">详情</n-button>
                 <n-button size="small" @click="copyTaskCommand(task)">复制命令</n-button>
                 <n-button size="small" secondary @click="handleRetry(task)">重试</n-button>
-                <n-button size="small" type="error" :disabled="!isTaskRunning(task)" @click="handleStop(task)">停止</n-button>
+                <n-button size="small" type="error" :disabled="!isTaskRunning(task) && task.state !== TASK_STATE.QUEUED" @click="handleStop(task)">停止</n-button>
               </div>
             </td>
           </tr>

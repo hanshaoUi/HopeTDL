@@ -25,6 +25,20 @@ test('Given an export spec, when converted, then it emits the canonical tdl argu
   ])
 })
 
+test('Given an all-messages export, when converted, then the UI-only all selector is omitted', () => {
+  const args = toArgs({
+    kind: 'export',
+    chat: '1651455317',
+    selector: { type: 'all', input: '' },
+    all: true,
+    output: '/tmp/export.json'
+  })
+
+  assert.deepEqual(args, [
+    'chat', 'export', '-c', '1651455317', '--all', '-o', '/tmp/export.json'
+  ])
+})
+
 test('Given a forward spec with a topic, when converted, then its router target stays one argument', () => {
   const spec = {
     kind: 'forward',

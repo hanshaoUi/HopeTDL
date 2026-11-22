@@ -1,4 +1,5 @@
 <script setup>
+import { useWorkbenchPreview } from '../../composables/useWorkbenchPreview'
 import { ref, computed, onMounted } from 'vue'
 import { commandTextForSpec, defaultOutputDir, runJob } from '../../utils'
 import CommandPreview from '../../components/CommandPreview.vue'
@@ -167,6 +168,7 @@ async function run() {
   message.success('已记录本次转发参数')
 }
 
+useWorkbenchPreview(spec)
 </script>
 <template>
   <div class="card">
