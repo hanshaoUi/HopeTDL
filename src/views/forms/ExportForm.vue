@@ -1,4 +1,5 @@
 <script setup>
+import { useWorkbenchPreview } from '../../composables/useWorkbenchPreview'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { confirmHtml, message } from '../../ui/naive'
 import { commandTextForSpec, defaultOutputDir, runJob, runJobAndWait } from '../../utils'
@@ -6,10 +7,11 @@ import CommandPreview from '../../components/CommandPreview.vue'
 import ChatSelect from '../../components/ChatSelect.vue'
 import { appState } from '../../state.js'
 import { chatId as getChatId, chatTitle as getChatTitle, findChatByValue } from '../../chatCache'
-import { readJson, saveForwardRecord, touchRecentChat, writeJson } from '../../historyStore'
+import { dedupeExportRecords, mergeExportRecord, readJson, saveForwardRecord, touchRecentChat, writeJson } from '../../historyStore'
 import { useAppliedRecord } from '../../useAppliedRecord'
 import { resolveRangeStart } from '../../exportRange'
 
+const hintTheme = { fontSize: '12px', lineHeight: '1.6', iconSize: '16px', padding: '10px 12px', iconMargin: '10px 8px 0 12px' }
 const chat = ref('')
 const type = ref('id')
 const input = ref('')
@@ -180,7 +182,8 @@ function copyText(text, successText = '已复制') {
 function loadMemory() {
   const allMemory = readAllMemory()
   const ns = nsKey.value
-  exportMemory.value = allMemory[ns] || { last: null, chats: {}, records: [] }
+  const memory = allMemory[ns] || { last: null, chats: {}, records: [] }
+  exportMemory.value = { ...memory, records: dedupeExportRecords(memory.records || []) }
 }
 
 function makeRecord(extra = {}) {
@@ -216,15 +219,7 @@ function saveMemory(record = makeRecord()) {
     }
   }
 
-  const records = current.records || []
-  const duplicated = records.findIndex(item =>
-    item.chat === record.chat &&
-    item.type === record.type &&
-    item.input === record.input &&
-    item.output === record.output
-  )
-  if (duplicated >= 0) records.splice(duplicated, 1)
-  current.records = [record, ...records].slice(0, 30)
+  current.records = mergeExportRecord(current.records, record)
 
   allMemory[ns] = current
   writeAllMemory(allMemory)
@@ -530,6 +525,7 @@ async function run() {
   pendingExportTaskId.value = started?.taskId || ''
   pendingExportRecord.value = record
 }
+useWorkbenchPreview(spec)
 </script>
 <template>
   <div class="card">
@@ -578,30 +574,27 @@ async function run() {
           </div>
         </n-form-item>
       </div>
-      <n-alert
+      <n-alert class="form-hint" :theme-overrides="hintTheme"
         v-if="requiresInput() && !input"
         type="warning"
         
         :show-icon="true" :closable="false"
         style="margin-bottom:16px"
-        title="最近 N 条需要 -i；按消息 ID 留空时会全量导出，完成后自动读取输出 JSON 的最大消息 ID，生成下次续导范围。"
-      />
-      <n-alert
+        >最近 N 条需要 -i；按消息 ID 留空时会全量导出，完成后自动读取输出 JSON 的最大消息 ID，生成下次续导范围。</n-alert>
+      <n-alert class="form-hint" :theme-overrides="hintTheme"
         v-if="canAutoAnalyzeNextInput()"
         type="info"
         
         :show-icon="true" :closable="false"
         style="margin-bottom:16px"
-        title="未填写 -i：本次会按 tdl 默认范围导出；完成后软件会读取 output JSON，记录最大消息 ID，并自动生成下次 -i。"
-      />
-      <n-alert
+        >未填写 -i：本次会按 tdl 默认范围导出；完成后软件会读取 output JSON，记录最大消息 ID，并自动生成下次 -i。</n-alert>
+      <n-alert class="form-hint" :theme-overrides="hintTheme"
         v-if="chatLastRecord"
         type="info"
         
         :show-icon="true" :closable="false"
         style="margin-bottom:16px"
-        :title="`当前聊天上次导出：-i ${chatLastRecord.input || '未填写'}，时间：${chatLastRecord.time || '-'}`"
-      />
+        >{{ `当前聊天上次导出：-i ${chatLastRecord.input || '未填写'}，时间：${chatLastRecord.time || '-'}` }}</n-alert>
       <n-form-item label="选项"><n-checkbox v-model:checked="all">包含消息正文</n-checkbox><n-checkbox v-model:checked="raw">保留原始结构</n-checkbox></n-form-item>
       <n-form-item label="输出文件">
         <div style="display:flex; gap:10px; align-items:center; width:100%">
@@ -645,11 +638,7 @@ async function run() {
         </n-form-item>
       </template>
     </n-form>
-    <CommandPreview :command="commandTextForSpec(spec)" />
-    <template v-if="autoForward">
-      <div style="height:10px"></div>
-      <CommandPreview :command="commandTextForSpec(forwardSpec)" />
-    </template>
+    <CommandPreview :command="commandTextForSpec(spec) + (autoForward ? '\n# 导出成功后转发\n' + commandTextForSpec(forwardSpec) : '')" />
     <div style="height:16px"></div>
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
       <n-button type="primary" @click="run">开始导出</n-button>

@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('tdlApi', {
   getConfig: () => ipcRenderer.invoke('config:get'),
+  exportMigration: localStorage => ipcRenderer.invoke('migration:export', localStorage),
   setConfig: config => ipcRenderer.invoke('config:set', config),
   checkEnvironment: () => ipcRenderer.invoke('environment:check'),
   run: payload => ipcRenderer.invoke('tdl:run', payload),

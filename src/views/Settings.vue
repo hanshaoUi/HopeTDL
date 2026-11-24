@@ -3,6 +3,7 @@ import { reactive, ref, watchEffect } from 'vue'
 import { message } from '../ui/naive'
 import { appState } from '../state'
 import { loadChatCache } from '../chatCache'
+const desktopApi = window.tdlApi
 
 const form = reactive({
   forwardFilterEnabled: false,
@@ -74,13 +75,57 @@ async function checkEnvironment() {
     envLoading.value = false
   }
 }
+
+async function exportMigration() {
+  try {
+    const localStorageData = Object.fromEntries(Object.keys(globalThis.localStorage)
+      .filter(key => key.startsWith('hopetdl.') || ['theme', 'showLog'].includes(key))
+      .map(key => [key, globalThis.localStorage.getItem(key)]))
+    const result = await window.tdlApi.exportMigration(localStorageData)
+    if (result?.ok) message.success('备份已导出')
+  } catch (error) { message.error(String(error)) }
+}
+async function importMigration() {
+  try {
+    const result = await window.tdlApi.importMigration()
+    if (result?.ok) {
+      appState.config = await window.tdlApi.getConfig()
+      message.success(result.message)
+    }
+  } catch (error) { message.error(String(error)) }
+}
 </script>
 
 <template>
   <h1 class="page-title">设置</h1>
   <p class="page-desc">配置会自动应用到导出、转发、上传等任务。现在按基础、性能、缓存、界面分组。</p>
 
-  <n-form label-width="130px">
+  <n-form label-width="110px" size="small" class="v2-settings-grid">
+    <div class="section-card">
+      <div class="section-title">主题与外观</div>
+      <p class="mini-muted appearance-help">立即生效并自动保存，无需点击底部的保存按钮。</p>
+      <div class="grid-2">
+        <n-form-item label="主题">
+          <n-radio-group v-model:value="appState.theme" aria-label="主题模式">
+            <n-radio-button value="system">跟随系统</n-radio-button>
+            <n-radio-button value="dark">深色</n-radio-button>
+            <n-radio-button value="light">浅色</n-radio-button>
+          </n-radio-group>
+        </n-form-item>
+        <n-form-item label="任务日志">
+          <n-switch v-model:value="appState.showLog" active-text="默认展开" inactive-text="收起" />
+        </n-form-item>
+      </div>
+    </div>
+
+    <div v-if="desktopApi?.exportMigration" class="section-card">
+      <div class="section-title">数据备份与迁移</div>
+      <div class="mini-muted">旧版先导出迁移文件，再在 Rust 版导入。导入前自动备份现有数据，导入后的定时计划保持暂停。</div>
+      <div class="action-row section-actions">
+        <n-button @click="exportMigration">导出备份 / 迁移文件</n-button>
+        <n-button v-if="desktopApi?.importMigration" @click="importMigration">导入迁移文件</n-button>
+      </div>
+    </div>
     <div class="section-card">
       <div class="section-title">基础设置</div>
       <div class="grid-2">
@@ -121,6 +166,10 @@ async function checkEnvironment() {
     <div class="section-card">
       <div class="section-title">性能设置</div>
       <div class="grid-2">
+        <n-form-item v-if="desktopApi?.nativeRuntime" label="同时运行任务">
+          <n-input-number v-model:value="form.maxConcurrentTasks" :min="1" :max="8" />
+          <span class="mini-muted">重启应用后生效；其余任务排队等待。</span>
+        </n-form-item>
         <n-form-item label="并发数"><n-input-number v-model:value="form.limit" :min="1" :max="20" /></n-form-item>
         <n-form-item label="线程数"><n-input-number v-model:value="form.threads" :min="1" :max="32" /></n-form-item>
         <n-form-item label="延迟"><n-input v-model:value="form.delay" placeholder="例如 2s，可为空" /></n-form-item>
@@ -180,20 +229,6 @@ async function checkEnvironment() {
       </div>
     </div>
 
-    <div class="section-card">
-      <div class="section-title">界面设置</div>
-      <div class="grid-2">
-        <n-form-item label="主题">
-          <n-radio-group v-model:value="appState.theme">
-            <n-radio-button value="dark">深色</n-radio-button>
-            <n-radio-button value="light">浅色</n-radio-button>
-          </n-radio-group>
-        </n-form-item>
-        <n-form-item label="任务日志">
-          <n-switch v-model:value="appState.showLog" active-text="默认展开" inactive-text="收起" />
-        </n-form-item>
-      </div>
-    </div>
 
     <div class="action-row">
       <n-button type="primary" @click="save">保存设置</n-button>

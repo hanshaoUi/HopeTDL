@@ -1,4 +1,5 @@
 <script setup>
+import { useWorkbenchPreview } from '../../composables/useWorkbenchPreview'
 import { computed, onMounted, ref } from 'vue'
 import { message } from '../../ui/naive'
 import { commandTextForSpec, defaultOutputDir, runJob, runJobAndWait } from '../../utils'
@@ -232,6 +233,7 @@ onMounted(async () => {
     dir.value = await defaultOutputDir()
   }
 })
+useWorkbenchPreview(spec)
 </script>
 
 <template>

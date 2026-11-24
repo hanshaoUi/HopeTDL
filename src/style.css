@@ -1,28 +1,3 @@
-:root {
-  --bg: #0f1117;
-  --panel: #171a23;
-  --panel2: #202432;
-  --line: #2e3445;
-  --text: #eef1f8;
-  --muted: #9aa3b8;
-  --blue: #6aa7ff;
-  --green: #74d99f;
-  --red: #ff7d7d;
-}
-
-/* Light theme variables. When the html root has data-theme="light", these values will override the dark defaults. */
-:root[data-theme='light'] {
-  --bg: #f5f7fa;
-  --panel: #ffffff;
-  --panel2: #f7f8fb;
-  --line: #dcdfe6;
-  --text: #2e3445;
-  --muted: #6c7a96;
-  /* Accent colors similar to Element Plus light theme */
-  --blue: #409eff;
-  --green: #67c23a;
-  --red: #f56c6c;
-}
 * { box-sizing: border-box; }
 html,
 body,
@@ -714,6 +689,46 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter,
 .chats-meta { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
 .chats-count { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
 .chats-advanced { margin-bottom: 16px; }
+.chat-category-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.chat-category-filters { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.chat-category-manager { margin-bottom: 16px; }
+.chat-category-manager-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+.chat-category-title { margin: 0 0 4px; font-size: 16px; font-weight: 750; }
+.chat-category-create { display: flex; align-items: center; gap: 8px; width: min(390px, 100%); }
+.chat-category-create .n-input { flex: 1; }
+.chat-category-empty { margin-top: 16px; color: var(--muted); font-size: 13px; }
+.chat-category-list {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.chat-category-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel2);
+}
+.chat-category-item .n-input { width: 160px; }
+.chat-category-item-name { font-size: 13px; font-weight: 700; }
 .field-row { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
 .field-label { flex: 0 0 96px; font-size: 13px; color: var(--muted); }
 .field-row > .n-input { flex: 1; }
@@ -748,6 +763,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter,
 .chat-sub { font-size: 12px; color: var(--muted); }
 .chat-stat { position: relative; padding-left: 11px; }
 .chat-stat::before { content: '·'; position: absolute; left: 3px; }
+.chat-category-picker { flex: 0 0 174px; width: 174px; }
 .chat-actions { flex: 0 0 auto; display: flex; gap: 6px; }
 
 @media (max-width: 1200px) {
@@ -755,7 +771,17 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter,
   .kind-picker { position: static; flex-direction: row; flex-wrap: wrap; }
   .kind-item { flex: 1 1 180px; }
   .chat-card { flex-wrap: wrap; }
+  .chat-category-picker { margin-left: 29px; }
   .chat-actions { width: 100%; padding-left: 29px; }
+}
+
+@media (max-width: 700px) {
+  .chats-toolbar,
+  .chat-category-bar,
+  .chat-category-manager-head { align-items: stretch; flex-direction: column; }
+  .chat-category-create { width: 100%; }
+  .chat-category-picker { flex: 1 1 180px; width: auto; margin-left: 29px; }
+  .chat-actions { overflow-x: auto; padding-bottom: 2px; }
 }
 
 /* 二维码登录：tdl 用半块字符（█▄▀）画码，必须整块渲染。

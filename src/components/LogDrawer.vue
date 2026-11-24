@@ -1,4 +1,5 @@
 <script setup>
+import AppIcon from './AppIcon.vue'
 import { ref, computed, nextTick, watch } from 'vue'
 import { confirmHtml, message } from '../ui/naive'
 import { appState } from '../state'
@@ -12,6 +13,15 @@ const RENDER_TAIL = 400
 
 const searchText = ref('')
 const selectedTaskId = ref('')
+const diskTail = ref('')
+watch(selectedTaskId, async id => {
+  diskTail.value = ''
+  if (!id || !window.tdlApi?.nativeRuntime) return
+  try {
+    const tail = await window.tdlApi.logTail(id)
+    if (selectedTaskId.value === id) diskTail.value = tail
+  } catch (error) { message.error(String(error)) }
+})
 const autoScroll = ref(true)
 const logBody = ref(null)
 
@@ -26,7 +36,7 @@ const errorCount = computed(() => appState.logErrorCount)
 
 const taskOptions = computed(() => [
   { label: '全部任务', value: '' },
-  ...appState.tasks.slice(0, 50).map(task => ({
+  ...appState.tasks.map(task => ({
     label: `${task.title || task.type} · ${task.status}`,
     value: task.id
   }))
@@ -132,7 +142,7 @@ watch(() => appState.logVersion, async () => {
   <section class="log-drawer" :class="{ expanded }">
     <!-- 收起态：只占一行。展开才吃屏幕高度。 -->
     <button class="log-bar" type="button" @click="expanded = !expanded">
-      <span class="log-bar-chevron" :class="{ up: !expanded }">▾</span>
+      <span class="log-bar-chevron" :class="{ up: !expanded }"><AppIcon name="chevron" :size="12" style="transform:rotate(90deg)" /></span>
       <span class="log-bar-label">任务日志</span>
       <span v-if="runningCount" class="log-pill running">运行中 {{ runningCount }}</span>
       <span v-if="errorCount" class="log-pill error">错误 {{ errorCount }}</span>
@@ -143,7 +153,7 @@ watch(() => appState.logVersion, async () => {
 
     <div v-if="expanded" class="log-panel-body">
       <div class="log-toolbar">
-        <n-select v-model:value="selectedTaskId" :options="taskOptions" size="small" style="width:190px" />
+        <n-select v-model:value="selectedTaskId" :options="taskOptions" filterable size="small" style="width:190px" />
         <n-input v-model:value="searchText" placeholder="搜索日志" size="small" clearable style="width:150px" />
         <span class="log-toolbar-spacer" />
         <n-switch v-model:value="autoScroll" size="small" />
@@ -154,7 +164,11 @@ watch(() => appState.logVersion, async () => {
       </div>
 
       <div ref="logBody" class="log-body">
-        <div v-if="!appState.logs.length && !liveLogs.length" class="log-empty">暂无日志。运行任务后会实时显示 tdl 输出。</div>
+        <template v-if="diskTail">
+          <div class="log-truncated">磁盘日志末尾（最多 32 KB；包含窗口隐藏或重启前的输出）</div>
+          <pre class="log-line">{{ diskTail }}</pre>
+        </template>
+        <div v-if="!diskTail && !appState.logs.length && !liveLogs.length" class="log-empty">暂无日志。运行任务后会实时显示 tdl 输出。</div>
         <div v-else-if="!visibleLogs.length && !liveLogs.length" class="log-empty">当前筛选条件下没有日志。</div>
         <div v-if="truncated" class="log-truncated">
           仅显示最近 {{ visibleLogs.length }} 行（缓冲上限 {{ MAX_LOG_LINES }} 行）。「复制全部」仍会导出缓冲区内的全部匹配行。

@@ -1,3 +1,5 @@
+> 此文件记录旧 Electron 架构。当前 Rust 后台和流程工作台请参见 [RUST-MIGRATION.md](RUST-MIGRATION.md)。
+
 # HopeTDL 架构现状与调整建议
 
 ## 一句话结论

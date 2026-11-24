@@ -21,8 +21,14 @@ import {
   NTag
 } from 'naive-ui'
 import './style.css'
-import App from './App.vue'
+import './v2.css'
+import { initializeDesktop } from './desktop'
 
+async function bootstrap() {
+await initializeDesktop()
+const { installTheme } = await import('./theme')
+installTheme()
+const { default: App } = await import('./App.vue')
 const app = createApp(App)
 
 const naiveComponents = [
@@ -52,3 +58,8 @@ for (const [name, component] of naiveComponents) {
 }
 
 app.mount('#app')
+}
+bootstrap().catch(error => {
+  console.error(error)
+  document.getElementById('app').textContent = `HopeTDL 启动失败：${error}`
+})

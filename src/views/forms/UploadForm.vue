@@ -1,4 +1,5 @@
 <script setup>
+import { useWorkbenchPreview } from '../../composables/useWorkbenchPreview'
 import { ref, computed, watch } from 'vue'
 import { commandTextForSpec, defaultOutputDir, runJob } from '../../utils'
 import CommandPreview from '../../components/CommandPreview.vue'
@@ -123,6 +124,7 @@ function run() {
   })
   runJob(spec.value, '上传文件')
 }
+useWorkbenchPreview(spec)
 </script>
 <template>
   <div class="card">

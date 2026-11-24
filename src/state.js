@@ -1,6 +1,7 @@
 import { reactive, shallowReactive } from 'vue'
 import { normalizeTaskRecord, recoverInterruptedTask } from './taskState'
 import { previewConfig } from '../shared/appDefaults.mjs'
+import localStorage from './storage'
 
 const TASKS_KEY = 'hopetdl.tasks.v1'
 const SCHEDULES_KEY = 'hopetdl.schedules.v1'
@@ -15,7 +16,7 @@ function readStoredTasks() {
     const value = JSON.parse(localStorage.getItem(TASKS_KEY) || '[]')
     return Array.isArray(value)
       ? value.map(item => {
-          const recovered = recoverInterruptedTask(item)
+          const recovered = window.tdlApi?.nativeRuntime ? item : recoverInterruptedTask(item)
           if (recovered.state === 'interrupted') {
             recoveryInfo.interruptedCount += 1
             recoveryInfo.interruptedTaskIds.push(recovered.id)
@@ -74,18 +75,23 @@ export const appState = reactive({
    */
   // 日志抽屉默认收起：展开态会吃掉三分之一屏幕，而多数时候用户不看它。
   showLog: false,
-  activeView: 'overview',
+  activeView: 'newTask',
+  workbenchRequest: null,
+  planTaskId: '',
+  planDraft: null,
+  tasksTab: 'all',
+  focusedTaskId: '',
   // 「新建任务」页当前选中的任务类型。
-  newTaskKind: 'export',
+  newTaskKind: 'commentForward',
   /**
-   * 当前主题，可选值为 'dark' 或 'light'。默认从 localStorage 中读取，若没有则默认为 dark。
+   * 保存主题偏好；system 的实际颜色由 theme.js 随系统解析。
    */
   theme: (() => {
     try {
       const saved = localStorage.getItem('theme')
-      return saved === 'light' ? 'light' : 'dark'
+      return ['system', 'light', 'dark'].includes(saved) ? saved : 'system'
     } catch (err) {
-      return 'dark'
+      return 'system'
     }
   })()
 })

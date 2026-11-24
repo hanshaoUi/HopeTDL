@@ -1,39 +1,46 @@
 <script setup>
-import { computed, defineAsyncComponent, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
 import { appState } from '../state'
-import { isTaskFailed, isTaskInterrupted, isTaskRunning } from '../taskState'
-
-// 「任务中心」和「历史记录」原本是两个页面，同一次导出会在两边各出现一次、
-// 字段和操作还不一样。这里并成一页两个视图：正在发生的事 / 已经发生的事。
-const TaskListPanel = defineAsyncComponent(() => import('./panels/TaskListPanel.vue'))
-const HistoryPanel = defineAsyncComponent(() => import('./panels/HistoryPanel.vue'))
-
-const tab = ref('live')
-
-const runningCount = computed(() => appState.tasks.filter(isTaskRunning).length)
-const failedCount = computed(() => appState.tasks.filter(isTaskFailed).length)
-const interruptedCount = computed(() => appState.tasks.filter(isTaskInterrupted).length)
-const scheduleCount = computed(() => appState.schedules.filter(item => item.enabled).length)
+import { retryTask, stopTask, commandTextForSpec, commandText } from '../utils'
+import { message } from '../ui/naive'
+import AppIcon from '../components/AppIcon.vue'
+import { isTaskFailed } from '../taskState'
+import { taskProgress, progressPercent, stagesForTask } from '../taskProgress'
+const History = defineAsyncComponent(()=>import('./panels/HistoryPanel.vue'))
+const Advanced = defineAsyncComponent(()=>import('./panels/TaskListPanel.vue'))
+const tab=ref('all'),selectedId=ref(''),logs=ref(''),progress=ref({}),showAdvanced=ref(false)
+const filters=[['all','全部'],['running','运行中'],['queued','排队中'],['success','已完成'],['failed','失败'],['history','历史参数']]
+const active=t=>['running','queued'].includes(t.state)
+const rows=computed(()=>appState.tasks.filter(t=>tab.value==='all'||(tab.value==='failed'?isTaskFailed(t):t.state===tab.value)))
+const selected=computed(()=>appState.tasks.find(t=>t.id===selectedId.value))
+const runningCount=computed(()=>appState.tasks.filter(t=>t.state==='running').length)
+const queuedCount=computed(()=>appState.tasks.filter(t=>t.state==='queued').length)
+const failedCount=computed(()=>appState.tasks.filter(isTaskFailed).length)
+watch(()=>appState.tasksTab,value=>{if(value){tab.value=value;appState.tasksTab=''}},{immediate:true})
+watch(()=>appState.focusedTaskId,id=>{if(id){selectedId.value=id;tab.value='all';appState.focusedTaskId=''}},{immediate:true})
+watch(selectedId,async id=>{logs.value='';if(!id||!window.tdlApi?.nativeRuntime)return;try{logs.value=await window.tdlApi.logTail(id);const t=selected.value;const dir=t?.workDir||t?.spec?.workDir;if(dir){const p=await window.tdlApi.readCommentForwardProgress(dir);if(p.ok)progress.value={...progress.value,[id]:{current:p.doneCount,total:p.totalCount,stage:'已保存断点'}}}}catch(e){message.error(String(e))}})
+function route(t){const s=t.spec||{};return s.sourceChat?`${s.sourceChat} → ${s.targetChat||'本地导出'}`:s.chat?`${s.chat} → ${s.output||s.path||'本地'}`:s.from?`${s.from} → ${s.target?.peer||''}`:t.summary||'—'}
+function output(t){return t.workDir||t.spec?.workDir||t.spec?.output||t.spec?.directory||t.outputPath}
+function percent(t){return progressPercent(t, progress.value[t.id])}
+function command(t){try{return t.command||(t.spec?commandTextForSpec(t.spec):commandText(t.args||[]))}catch{return '评论区顺序转发流程'}}
+async function retry(t){try{await retryTask(t);message.success('已加入后台队列')}catch(e){message.error(String(e))}}
+async function stop(t){try{await stopTask(t)}catch(e){message.error(String(e))}}
+function plan(t){appState.planTaskId=t.id;appState.activeView='plans'}
+async function open(t){const r=await window.tdlApi.openPath(output(t));if(r?.ok===false)message.error(r.message)}
+const now = ref(Date.now())
+let countdown
+function waitText(t) { if(t.state!=='running'||!t.floodWaitUntil)return '';const seconds=Math.ceil((t.floodWaitUntil-now.value)/1000);return seconds>0?`Telegram 限流 · 约 ${seconds} 秒（由 tdl 处理等待）`:'限流等待时间已到，等待 tdl 继续或退出' }
+let offProgress,offLog
+onMounted(()=>{countdown=setInterval(()=>now.value=Date.now(),1000);offProgress=window.tdlApi?.onCommentForwardProgress(p=>{progress.value={...progress.value,[p.taskId]:p}});offLog=window.tdlApi?.onLog(p=>{if(p.taskId===selectedId.value)logs.value=(logs.value+p.text).slice(-32768)})})
+onUnmounted(()=>{clearInterval(countdown);offProgress?.();offLog?.()})
 </script>
-
 <template>
-  <header class="page-head">
-    <h1 class="page-title">任务</h1>
-    <p class="page-desc">运行中和已完成的任务在「任务与计划」，可套用参数重跑的历史参数在「历史参数」。</p>
-  </header>
-
-  <div class="stat-row">
-    <div class="stat"><div class="label">运行中</div><div class="value">{{ runningCount }}</div></div>
-    <div class="stat" :class="{ warn: failedCount }"><div class="label">失败</div><div class="value">{{ failedCount }}</div></div>
-    <div class="stat" :class="{ warn: interruptedCount }"><div class="label">已中断</div><div class="value">{{ interruptedCount }}</div></div>
-    <div class="stat"><div class="label">启用的计划</div><div class="value">{{ scheduleCount }}</div></div>
-  </div>
-
-  <div class="segmented">
-    <button type="button" :class="{ active: tab === 'live' }" @click="tab = 'live'">任务与计划</button>
-    <button type="button" :class="{ active: tab === 'history' }" @click="tab = 'history'">历史参数</button>
-  </div>
-
-  <TaskListPanel v-if="tab === 'live'" />
-  <HistoryPanel v-else />
+  <header class="page-head wb-header"><div><h1 class="page-title">任务</h1><p class="page-desc">正在执行和已完成的任务。</p></div><button class="btn primary" @click="appState.activeView='newTask'"><AppIcon name="plus" :size="14" />新建任务</button></header>
+  <div class="stat-row"><div class="stat-card info"><div class="stat-label">运行中</div><div class="stat-value">{{runningCount}}</div></div><div class="stat-card"><div class="stat-label">排队中</div><div class="stat-value">{{queuedCount}}</div></div><div class="stat-card warn"><div class="stat-label">失败</div><div class="stat-value">{{failedCount}}</div></div><div class="stat-card"><div class="stat-label">任务总数</div><div class="stat-value">{{appState.tasks.length}}</div></div></div>
+  <nav class="task-filter" aria-label="任务筛选"><button v-for="f in filters" :key="f[0]" class="pill" :class="{active:tab===f[0]}" @click="tab=f[0]">{{f[1]}}</button></nav>
+  <History v-if="tab==='history'" />
+  <template v-else><div v-if="!rows.length" class="flow-empty"><AppIcon name="tasks" :size="32" /><h2>暂无{{tab==='all'?'':filters.find(f=>f[0]===tab)?.[1]}}任务</h2><p>在工作台提交任务后，这里显示后台的实际状态和处理结果。</p><button class="btn" @click="appState.activeView='newTask'">前往工作台</button></div>
+  <div v-else class="task-list"><article v-for="t in rows" :key="t.id" class="task-row" :class="{selected:selectedId===t.id}"><span class="state-label" :class="t.state">{{t.status}}</span><button class="task-info" @click="selectedId=selectedId===t.id?'':t.id" :aria-expanded="selectedId===t.id"><span class="task-name">{{t.title||t.type}}</span><span class="task-meta">{{route(t)}}</span><span v-if="waitText(t)" class="task-meta">{{waitText(t)}}</span><span class="task-meta">{{t.createdAt||'—'}}</span><span v-if="t.state==='queued'" class="task-meta">等待并发位（{{appState.runtimeSlots?.active ?? runningCount}} / {{appState.runtimeSlots?.limit ?? appState.config.maxConcurrentTasks ?? 2}} 已占用）</span><span v-if="stagesForTask(t).length" class="stage-indicator" :aria-label="stagesForTask(t).map(s=>s.label+':'+s.state).join('，')"><span v-for="s in stagesForTask(t)" :key="s.label" class="stage-dot" :class="s.state" :title="s.label" /></span></button><div v-if="percent(t)!==null" class="task-progress"><div class="progress-bar"><div class="progress-fill" :style="{width:percent(t)+'%'}" /></div><div class="progress-text">{{taskProgress(t,progress[t.id])?.current}} / {{taskProgress(t,progress[t.id])?.total}} 组 · {{percent(t)}}%</div></div><div class="task-actions"><button v-if="active(t)" class="btn sm danger" @click="stop(t)">停止</button><button v-else class="btn sm" @click="retry(t)">重试</button><button class="btn sm ghost" @click="selectedId=selectedId===t.id?'':t.id">详情</button><button class="btn sm ghost" @click="plan(t)">存为计划</button></div></article></div>
+  <section v-if="selected" class="card task-detail"><div class="card-head"><h2 class="card-title">{{selected.title||selected.type}} · 处理详情</h2><button class="btn sm ghost" @click="selectedId=''">收起</button></div><p class="mini-muted">{{route(selected)}}</p><p v-if="selected.errorMessage" class="field-error" role="alert">{{selected.errorMessage}}</p><p v-if="selected.failedCount" class="field-error">失败 {{selected.failedCount}} 条，请查看失败记录并选择原目录续跑。</p><div class="action-row"><button v-if="output(selected)" class="btn sm" @click="open(selected)">打开结果目录</button><span class="mini-muted">{{selected.startedAt||'未开始'}} · {{selected.finishedAt||'未结束'}}</span></div><details class="advanced-rules"><summary>执行命令</summary><pre class="command-preview">{{command(selected)}}</pre></details><details class="advanced-rules" open><summary>运行日志</summary><pre class="task-log">{{logs||'暂无日志输出'}}</pre></details></section>
+  <details class="advanced-rules" @toggle="showAdvanced=$event.target.open"><summary>高级任务管理（清理、完整详情与增量计划）</summary><Advanced v-if="showAdvanced" /></details></template>
 </template>
