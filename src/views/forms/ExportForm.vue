@@ -11,6 +11,7 @@ import { dedupeExportRecords, mergeExportRecord, readJson, saveForwardRecord, to
 import { useAppliedRecord } from '../../useAppliedRecord'
 import { resolveRangeStart } from '../../exportRange'
 
+const hintTheme = { fontSize: '12px', lineHeight: '1.6', iconSize: '16px', padding: '10px 12px', iconMargin: '10px 8px 0 12px' }
 const chat = ref('')
 const type = ref('id')
 const input = ref('')
@@ -573,30 +574,27 @@ useWorkbenchPreview(spec)
           </div>
         </n-form-item>
       </div>
-      <n-alert
+      <n-alert class="form-hint" :theme-overrides="hintTheme"
         v-if="requiresInput() && !input"
         type="warning"
         
         :show-icon="true" :closable="false"
         style="margin-bottom:16px"
-        title="最近 N 条需要 -i；按消息 ID 留空时会全量导出，完成后自动读取输出 JSON 的最大消息 ID，生成下次续导范围。"
-      />
-      <n-alert
+        >最近 N 条需要 -i；按消息 ID 留空时会全量导出，完成后自动读取输出 JSON 的最大消息 ID，生成下次续导范围。</n-alert>
+      <n-alert class="form-hint" :theme-overrides="hintTheme"
         v-if="canAutoAnalyzeNextInput()"
         type="info"
         
         :show-icon="true" :closable="false"
         style="margin-bottom:16px"
-        title="未填写 -i：本次会按 tdl 默认范围导出；完成后软件会读取 output JSON，记录最大消息 ID，并自动生成下次 -i。"
-      />
-      <n-alert
+        >未填写 -i：本次会按 tdl 默认范围导出；完成后软件会读取 output JSON，记录最大消息 ID，并自动生成下次 -i。</n-alert>
+      <n-alert class="form-hint" :theme-overrides="hintTheme"
         v-if="chatLastRecord"
         type="info"
         
         :show-icon="true" :closable="false"
         style="margin-bottom:16px"
-        :title="`当前聊天上次导出：-i ${chatLastRecord.input || '未填写'}，时间：${chatLastRecord.time || '-'}`"
-      />
+        >{{ `当前聊天上次导出：-i ${chatLastRecord.input || '未填写'}，时间：${chatLastRecord.time || '-'}` }}</n-alert>
       <n-form-item label="选项"><n-checkbox v-model:checked="all">包含消息正文</n-checkbox><n-checkbox v-model:checked="raw">保留原始结构</n-checkbox></n-form-item>
       <n-form-item label="输出文件">
         <div style="display:flex; gap:10px; align-items:center; width:100%">

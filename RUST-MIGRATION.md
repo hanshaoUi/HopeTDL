@@ -57,3 +57,9 @@ HOPETDL_ORIGINAL_ROOT=/path/to/original/HopeTDL cargo test --manifest-path src-t
 ```
 
 已知保留的安全差异：演练不写入已完成断点，避免正式续跑漏发；损坏 JSON 直接报错。上述模拟对比不代表已验证真实 Telegram 权限、话题可用性或实际发送。
+
+## GitHub 自动构建
+
+`.github/workflows/build.yml` 使用 npm 锁文件和 Rust 工具链构建 Rust/Tauri 版。PR 运行 JS / Rust 核心测试；推送 main、手动运行或推送 v 开头的版本标签时，在测试通过后分别构建 macOS Apple Silicon、macOS Intel、Windows x64 和 Linux x64。安装包在 Actions 页面的 Artifacts 中保留 14 天；版本标签还会生成 GitHub Release 并附上安装包。
+
+macOS 提供 DMG 和 app.zip，Windows 提供 NSIS exe，Linux 提供 deb 和 AppImage。构建机无需 Telegram 账号或聊天数据；tdl 仍为用户单独安装的外部工具。macOS 当前采用本地临时签名，未配置 Apple 公证；Windows 未配置发行证书。构建成功不等同于完成各平台真实业务验收。
