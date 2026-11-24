@@ -104,10 +104,10 @@ fn comment_work_directory_resolves_relative_paths_before_spawning() {
     );
     assert!(work_dir(&json!({"baseOutputDir":"relative output"}), &cwd)
         .starts_with(cwd.join("relative output/comment-forward")));
-    assert_eq!(
-        work_dir(&json!({"workDir":"/tmp/absolute output"}), &cwd),
-        std::path::PathBuf::from("/tmp/absolute output")
-    );
+    let temp = tempfile::tempdir().unwrap();
+    let absolute = temp.path().join("absolute output");
+    assert!(absolute.is_absolute());
+    assert_eq!(work_dir(&json!({"workDir":absolute}), &cwd), absolute);
 }
 
 #[cfg(unix)]
