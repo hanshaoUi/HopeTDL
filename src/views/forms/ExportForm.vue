@@ -640,11 +640,7 @@ useWorkbenchPreview(spec)
         </n-form-item>
       </template>
     </n-form>
-    <CommandPreview :command="commandTextForSpec(spec)" />
-    <template v-if="autoForward">
-      <div style="height:10px"></div>
-      <CommandPreview :command="commandTextForSpec(forwardSpec)" />
-    </template>
+    <CommandPreview :command="commandTextForSpec(spec) + (autoForward ? '\n# 导出成功后转发\n' + commandTextForSpec(forwardSpec) : '')" />
     <div style="height:16px"></div>
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
       <n-button type="primary" @click="run">开始导出</n-button>

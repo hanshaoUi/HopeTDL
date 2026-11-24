@@ -1,8 +1,9 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
+import { progressPercent } from '../taskProgress'
 import { appState } from '../state'
-import { commandTextForSpec, runJob } from '../utils'
+import { commandTextForSpec, runJob, retryTask } from '../utils'
 import { message } from '../ui/naive'
 import { isTaskFailed, isTaskRunning, taskStatusType } from '../taskState'
 
@@ -36,6 +37,7 @@ async function checkEnvironment() {
 }
 
 function startLogin() {
+  if (loginType.value !== 'qr') return
   runJob(loginSpec.value, `登录：${loginType.value}`)
 }
 
@@ -46,6 +48,7 @@ watch(lastLoginState, (state, previous) => {
   if (state === 'success' && state !== previous) checkEnvironment()
 })
 
+async function retry(row) { try { await retryTask(row); message.success('已加入后台队列') } catch(e) { message.error(String(e)) } }
 function goto(view, kind) {
   if (kind) appState.newTaskKind = kind
   appState.activeView = view
@@ -91,7 +94,7 @@ onMounted(checkEnvironment)
         <n-radio-button value="code">验证码</n-radio-button>
         <n-radio-button value="desktop">Desktop 导入</n-radio-button>
       </n-radio-group>
-      <n-button size="small" type="primary" @click="startLogin">开始登录</n-button>
+      <n-button size="small" type="primary" :disabled="loginType!=='qr'" @click="startLogin">开始登录</n-button>
       <code class="inline-command">{{ commandTextForSpec(loginSpec) }}</code>
     </div>
 
@@ -157,7 +160,7 @@ onMounted(checkEnvironment)
       <li v-for="row in latestTasks" :key="row.id" class="recent-item">
         <n-tag size="small" :type="taskStatusType(row)">{{ row.status }}</n-tag>
         <span class="recent-title">{{ row.title || row.type }}</span>
-        <span class="recent-time">{{ row.createdAt }}</span>
+        <span v-if="progressPercent(row)!==null" class="mini-muted">{{progressPercent(row)}}%</span><button v-if="isTaskFailed(row)" class="btn sm" @click="retry(row)">重试</button><span class="recent-time">{{ row.createdAt }}</span>
       </li>
     </ul>
   </section>

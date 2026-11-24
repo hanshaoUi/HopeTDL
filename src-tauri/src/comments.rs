@@ -68,10 +68,13 @@ struct Worker<'a> {
 }
 impl Worker<'_> {
     fn progress(&self, current: usize, total: usize, id: u64, stage: &str) {
-        self.e.emit(
-            "comment-forward:progress",
-            json!({"taskId":self.id,"current":current,"total":total,"id":id,"stage":stage}),
-        );
+        let progress =
+            json!({"taskId":self.id,"current":current,"total":total,"id":id,"stage":stage});
+        if let Err(err) = self.e.store.task(self.id, json!({"progress":progress})) {
+            self.e.emit("runtime:error", json!(err));
+        }
+        self.e.changed();
+        self.e.emit("comment-forward:progress", progress);
     }
     async fn export(&self, file: &Path, selector: Vec<String>, initial: bool) -> Result<()> {
         if self.c["skipExistingExport"] == true && file.is_file() {
@@ -271,6 +274,7 @@ pub async fn run(
         vec![]
     };
     let posts = dir.join("posts.json");
+    w.progress(0, 0, 0, "export-list");
     w.export(&posts, selector, true).await?;
     let mut ids = message_ids(&read_json(&posts)?);
     ids.retain(|i| *i >= start && (end == 0 || *i <= end));
@@ -296,7 +300,16 @@ pub async fn run(
                     progress["done"][&key] = json!({"id":post_id,"doneAt":now()});
                     progress["failed"].as_object_mut().unwrap().remove(&key);
                 }
-                w.progress(index + 1, ids.len(), *post_id, "done");
+                w.progress(
+                    index + 1,
+                    ids.len(),
+                    *post_id,
+                    if c["dryRun"] == true {
+                        "rehearsal"
+                    } else {
+                        "done"
+                    },
+                );
             }
             Err(err) => {
                 progress["failed"][&key] = json!({"id":post_id,"error":err,"failedAt":now()});

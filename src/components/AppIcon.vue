@@ -1,6 +1,7 @@
 <script setup>
 defineProps({ name: String, size: { type: [Number, String], default: 20 } });
 const paths = {
+  star: "m12 2 3 6 7 1-5 5 1 7-6-3-6 3 1-7-5-5 7-1 3-6Z",
   bolt: 'M13 2 3 14h9l-1 8 10-12h-9l1-8Z',
   clock: 'M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0M12 6v6l4 2',
   tasks: 'M14 2H6v20h14V8l-6-6Zm0 0v6h6M8 13h8m-8 4h8',

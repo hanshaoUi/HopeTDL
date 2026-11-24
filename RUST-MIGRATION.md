@@ -6,7 +6,7 @@
 
 - Vue + Naive UI：v2 布局、完整任务参数、历史、任务与计划界面。
 - Tauri 2：系统 WebView、文件对话框、托盘与本地 Rust IPC。
-- `src-tauri/src/engine.rs`：默认 2 个任务并发、排队、取消、子进程回收、多步流程和任务状态。继续使用外部 `tdl`，不重写 Telegram 协议。
+- `src-tauri/src/engine.rs`：默认 2 个任务并发（设置即时生效，降低上限不终止已有任务）、排队、取消、子进程回收、多步流程和任务状态。继续使用外部 `tdl`，不重写 Telegram 协议。
 - `comments.rs`：主消息→评论顺序、过滤、话题错误降级、`progress.json`、演练与续跑。
 - `scheduler.rs`：独立于窗口的 15 秒检测周期、同一计划防重入、任务完成后推进增量游标。评论搬运与多步流程支持按时间执行；旧的导出/转发增量计划仍可执行。
 - `filter.rs`：原生消息识别、内容类型过滤、关键词与 ECMAScript 风格正则替换。

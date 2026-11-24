@@ -56,7 +56,7 @@ export function isTaskRunning(task) {
 
 export function isTaskFailed(task) {
   const state = normalizeTaskState(task?.state || task?.status)
-  return state === TASK_STATE.FAILED || state === TASK_STATE.PARTIAL
+  return state === TASK_STATE.FAILED || state === TASK_STATE.PARTIAL || state === TASK_STATE.INTERRUPTED
 }
 
 export function isTaskInterrupted(task) {

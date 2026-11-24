@@ -1,8 +1,34 @@
 <script setup>
-import { computed, defineAsyncComponent, provide, ref, shallowRef, unref } from 'vue'
+import { computed, defineAsyncComponent, provide, ref, shallowRef, unref, watch, onMounted, onUnmounted } from 'vue'
 import { appState } from '../state'
 import AppIcon from '../components/AppIcon.vue'
 import { message } from '../ui/naive'
+import { getCommentForwardRecords, getDownloadRecords, getExportRecords, getForwardRecords, getUploadRecords } from '../historyStore'
+const showHistory = ref(false), historyRows = ref([])
+const historyGetters = {export:getExportRecords,forward:getForwardRecords,download:getDownloadRecords,upload:getUploadRecords,commentForward:getCommentForwardRecords}
+function history() { showHistory.value=!showHistory.value; historyRows.value=historyGetters[current.value.key]().slice(0,20) }
+function applyHistory(row) {
+  const field={export:'selectedExportRecord',forward:'selectedForwardRecord',download:'selectedDownloadRecord',upload:'selectedUploadRecord',commentForward:'selectedCommentForwardRecord'}[current.value.key]
+  appState[field]=row; showHistory.value=false
+}
+watch([()=>appState.newTaskKind,()=>appState.config.ns],()=>{showHistory.value=false})
+function closeHistory(event) { if(event.key==='Escape')showHistory.value=false }
+onMounted(()=>window.addEventListener('keydown',closeHistory))
+onUnmounted(()=>window.removeEventListener('keydown',closeHistory))
+const filterAvailable = !!window.tdlApi?.previewFilter
+const sample = ref(''), sampleResult = ref(null), sampleBusy = ref(false)
+let sampleRevision = 0
+async function previewFilter() {
+  if(!window.tdlApi?.previewFilter)return
+  sampleBusy.value=true
+  const revision=sampleRevision
+  try {
+    const input=sample.value.trim()
+    const json=input.startsWith('{')||input.startsWith('[')?JSON.parse(input):{messages:[{id:1,text:sample.value}]}
+    const result=await window.tdlApi.previewFilter({json,spec:JSON.parse(JSON.stringify(spec.value||{}))})
+    if(revision===sampleRevision)sampleResult.value=result
+  } catch(e) { message.error(String(e)) } finally { sampleBusy.value=false }
+}
 const kinds = [
   { key:'export', title:'导出消息', short:'元数据 → JSON', icon:'download', component:defineAsyncComponent(()=>import('./forms/ExportForm.vue')) },
   { key:'download', title:'下载媒体', short:'图片视频 → 本地', icon:'media', component:defineAsyncComponent(()=>import('./forms/DownloadForm.vue')) },
@@ -12,6 +38,7 @@ const kinds = [
 ]
 const current = computed(()=>kinds.find(k=>k.key===appState.newTaskKind)||kinds[3])
 const command = ref(''), spec = shallowRef(null), execution = shallowRef({})
+watch([sample,()=>spec.value,()=>appState.config],()=>{sampleRevision++;sampleResult.value=null},{deep:true})
 let specOwner, commandOwner
 provide('workbenchPreview', {
   plan,
@@ -38,7 +65,7 @@ const actualStatus = computed(()=>unref(execution.value.status)||'idle')
 const pipeline = computed(()=>{
   if(current.value.key==='commentForward') return [
     ['导出主消息列表','读取来源消息 ID，保存 posts.json'],
-    ['循环每个主消息',exportOnly.value?'导出主消息与评论 → 过滤 → 保存':isRehearsal.value?'演练：不逐条导出，不实际转发':'导出评论区 → 过滤 → 按顺序转发'],
+    ['循环每个主消息',isRehearsal.value?'演练：不逐条导出，不实际转发':exportOnly.value?'导出主消息与评论 → 过滤 → 保存':'导出评论区 → 过滤 → 按顺序转发'],
     ['写入断点',isRehearsal.value?'演练不写已完成断点':'progress.json · 下次从此继续']
   ]
   return {
@@ -49,12 +76,11 @@ const pipeline = computed(()=>{
   }[current.value.key]
 })
 const stageIndex = computed(()=>{
-  if(actualStatus.value==='done')return 3
+  if(actualStatus.value==='done')return pipeline.value.length
   if(actualProgress.value?.stage==='done' || actualProgress.value?.stage==='failed')return 2
-  return actualProgress.value?.total ? 1 : 0
+  return actualProgress.value?.stage && actualProgress.value.stage!=='export-list' ? 1 : 0
 })
 async function copy() {try{await navigator.clipboard.writeText(command.value);message.success('命令已复制')}catch(e){message.error(String(e))}}
-function history() {appState.tasksTab='history';appState.activeView='tasks'}
 function plan() {
   if(!spec.value) return
   const s=spec.value
@@ -71,7 +97,7 @@ function plan() {
 <template>
   <header class="page-head wb-header">
     <div><h1 class="page-title">工作台</h1><p class="page-desc">选择任务类型，参数会实时转换为 tdl 命令。</p></div>
-    <button class="btn sm" @click="history"><AppIcon name="history" :size="14" />历史参数</button>
+    <div class="history-anchor"><button class="btn sm" :aria-expanded="showHistory" @click="history"><AppIcon name="history" :size="14" />历史参数</button><section v-if="showHistory" class="history-popover" aria-label="历史参数"><div class="action-row"><strong>{{current.title}} · 当前空间</strong><button class="btn sm ghost" @click="showHistory=false">关闭</button></div><p v-if="!historyRows.length" class="mini-muted">暂无历史参数</p><button v-for="row in historyRows" :key="row.id||row.output" class="history-record" @click="applyHistory(row)"><span>{{row.time||row.createdAt||'历史参数'}}</span><p class="mini-muted">{{row.sourceChat||row.chat||row.peer||row.from||row.path||row.command}}</p><span>回填参数</span></button><button class="btn sm ghost" @click="appState.tasksTab='history';appState.activeView='tasks';showHistory=false">查看全部历史</button></section></div>
   </header>
   <div class="wb-layout">
     <nav class="wb-picker kind-picker" aria-label="任务类型">
@@ -81,8 +107,8 @@ function plan() {
     </nav>
     <div class="wb-form kind-body">
       <div class="pipeline" aria-label="执行流程">
-        <div v-for="(step,i) in pipeline" :key="step[0]" class="pipeline-step" :class="{active:i===stageIndex,done:actualStatus==='done'||(actualStatus==='running'&&i<stageIndex)}">
-          <div class="pipeline-num">{{i+1}}</div><div class="pipeline-body"><div class="pipeline-title">{{step[0]}}</div><div class="pipeline-desc">{{step[1]}}</div></div>
+        <div v-for="(step,i) in pipeline" :key="step[0]" class="pipeline-step" :class="{skipped:isRehearsal&&i>0,active:actualStatus==='running'&&i===stageIndex&&!(isRehearsal&&i>0),done:!(isRehearsal&&i>0)&&(actualStatus==='done'||(actualStatus==='running'&&i<stageIndex))}">
+          <div class="pipeline-num">{{isRehearsal&&i>0?'—':i+1}}</div><div class="pipeline-body"><div class="pipeline-title">{{step[0]}}</div><div class="pipeline-desc">{{step[1]}}</div></div>
         </div>
       </div>
       <component :is="current.component" />
@@ -94,7 +120,8 @@ function plan() {
       </section>
       <section v-if="['commentForward','forward'].includes(current.key)" class="filter-preview">
         <div class="filter-preview-head">过滤预览<span>{{spec?.blockKeywordsText?'本任务规则':'全局规则'}}</span></div>
-        <div class="filter-rules-summary"><template v-if="spec?.blockKeywordsText"><span class="filter-tag block">屏蔽词</span><p>{{spec.blockKeywordsText}}</p></template><template v-if="appState.config.forwardFilterEnabled"><p>全局过滤已启用</p><p v-if="appState.config.filterKeywordsText">{{appState.config.filterKeywordsText}}</p><p v-if="appState.config.removeLinks">移除链接</p><p v-if="appState.config.blockImages">过滤图片</p><p v-if="appState.config.blockVideos">过滤视频</p><p v-if="appState.config.blockTextOnly">过滤纯文本</p></template><p v-else-if="!spec?.blockKeywordsText">未启用关键词或类型过滤</p><p class="mini-muted">尚未载入消息样本；真实命中数量以执行结果为准。</p></div>
+        <div class="filter-rules-summary"><template v-if="spec?.blockKeywordsText"><span class="filter-tag block">屏蔽词</span><p>{{spec.blockKeywordsText}}</p></template><template v-if="appState.config.forwardFilterEnabled"><p>全局过滤已启用</p><p v-if="appState.config.filterKeywordsText">{{appState.config.filterKeywordsText}}</p><p v-if="appState.config.removeLinks">移除链接</p><p v-if="appState.config.blockImages">过滤图片</p><p v-if="appState.config.blockVideos">过滤视频</p><p v-if="appState.config.blockTextOnly">过滤纯文本</p></template><p v-else-if="!spec?.blockKeywordsText">未启用关键词或类型过滤</p><p v-if="!sampleResult" class="mini-muted">尚未载入消息样本；真实命中数量以执行结果为准。</p><p v-else class="mini-muted">结果仅适用于粘贴样本，频道实际消息以执行结果为准。</p></div>
+        <div class="filter-rules-summary"><label for="filter-sample">粘贴测试文本或导出 JSON</label><textarea id="filter-sample" v-model="sample" class="sandbox-input" placeholder="样本仅用于本地过滤，不发送消息" /><button class="btn sm" :disabled="!sample.trim()||sampleBusy||!filterAvailable" @click="previewFilter">{{sampleBusy?'计算中…':'测试过滤'}}</button><p v-if="!filterAvailable" class="mini-muted">请在 Rust 应用中使用原生过滤预览。</p><template v-if="sampleResult"><p>保留 {{sampleResult.count}} 条 · 删除 {{sampleResult.removed}} 条 · 移除链接 {{sampleResult.linksRemoved}} 处</p><pre class="filter-result">{{JSON.stringify(sampleResult.json,null,2)}}</pre></template></div>
       </section>
       <section class="preview-box"><div class="preview-head">本次任务</div><dl class="preview-facts"><dt>账号空间</dt><dd>{{appState.config.ns||'hope'}}</dd><template v-if="spec?.sourceChat||spec?.chat"><dt>来源</dt><dd>{{spec.sourceChat||spec.chat}}</dd></template><template v-if="spec?.targetChat||spec?.target?.peer"><dt>目标</dt><dd>{{spec.targetChat||spec.target.peer}}</dd></template><dt>操作</dt><dd>{{current.title}}</dd><dt>执行顺序</dt><dd>{{current.key==='commentForward'?'主消息 → 评论 → 下一条':'按表单参数执行'}}</dd></dl></section>
     </div></aside>

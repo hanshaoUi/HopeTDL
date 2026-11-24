@@ -17,7 +17,6 @@ use tauri::{
     Emitter, Manager, WindowEvent,
 };
 use tauri_plugin_opener::OpenerExt;
-use tokio_util::sync::CancellationToken;
 
 #[tauri::command]
 async fn request(
@@ -30,18 +29,12 @@ async fn request(
     let p = payload.unwrap_or(Value::Null);
     match channel.as_str() {
         "config:get" => e.config(),
-        "config:set" => {
-            if !p.is_object() {
-                return Err("配置必须是对象".into());
-            }
-            write_json(&e.store.root.join("config.json"), &p)?;
-            e.config()
-        }
+        "config:set" => e.set_config(&p),
         "path:defaultOutputDir" => {
             fs::create_dir_all(&e.output).map_err(|e| e.to_string())?;
             Ok(json!(e.output))
         }
-        "runtime:get" => Ok(e.store.snapshot()),
+        "runtime:get" => Ok(e.snapshot()),
         "runtime:preference" => {
             let key = p["key"].as_str().ok_or("缺少存储键")?;
             if !key.starts_with("hopetdl.") && !["theme", "showLog"].contains(&key) {
@@ -181,34 +174,13 @@ async fn request(
             Ok(v) => Ok(v["chats"].clone()),
             Err(err) => Ok(json!({"error":err})),
         },
+        "filter:preview" => e.preview_filter(&p),
+        "tdl:version" => e.version().await,
         "environment:check" => {
             let c = e.config()?;
-            let token = CancellationToken::new();
-            let out = engine::timed(
-                e.command(
-                    "environment",
-                    &["version".into()],
-                    &json!({"tdlPath":c["tdlPath"]}),
-                    None,
-                    &token,
-                    true,
-                ),
-                &token,
-                8,
-            )
-            .await;
-            let (ok, detail) = match out {
-                Ok(o) if o.code == 0 => (
-                    true,
-                    if o.stdout.trim().is_empty() {
-                        o.stderr.trim().to_owned()
-                    } else {
-                        o.stdout.trim().to_owned()
-                    },
-                ),
-                Ok(o) => (false, o.error()),
-                Err(err) => (false, err),
-            };
+            let version = e.version().await?;
+            let ok = version["ok"] == true;
+            let detail = text(&version["detail"]);
             let dir = PathBuf::from(text(&c["defaultDownloadDir"]));
             let write = fs::create_dir_all(&dir)
                 .map_err(|e| e.to_string())

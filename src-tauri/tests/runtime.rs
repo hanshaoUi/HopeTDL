@@ -141,6 +141,8 @@ if 'forward' in a and (root/'fail-topic').exists() and arg('--to').endswith('tar
     print('MSG_ID_INVALID',file=sys.stderr);sys.exit(2)
 if 'forward' in a and (root/'fail-post').exists() and 'post_1' in arg('--from'):
     print('forward failure',file=sys.stderr);sys.exit(2)
+if 'wait-demo' in a:
+    sys.stdout.write('FLOOD_');sys.stdout.flush();time.sleep(.15);sys.stdout.write('WAIT_2\n');sys.stdout.flush()
 if 'flood' in a:
     for i in range(4000):sys.stdout.buffer.write(('进度%d\r'%i).encode())
     sys.stdout.buffer.flush()
@@ -197,6 +199,93 @@ print('任务完成')
         assert_eq!(done(&e, "slow").await["state"], "stopped");
         let calls = std::fs::read_to_string(dir.path().join("calls.jsonl")).unwrap_or_default();
         assert!(!calls.contains("version"));
+    }
+    #[tokio::test]
+    async fn concurrency_changes_wake_queue_and_lowering_keeps_running_leases() {
+        let (dir, e, _) = fixture();
+        async fn wait_state(e: &Engine, id: &str, state: &str) {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if e.store.snapshot()["tasks"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|t| t["id"] == id && t["state"] == state)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+        for id in ["first", "second"] {
+            e.launch(json!({"taskId":id,"args":["chat","export","-c","slow","-o",dir.path().join(format!("{id}.json"))]})).await.unwrap();
+        }
+        wait_state(&e, "first", "running").await;
+        assert_eq!(e.snapshot()["activeSlots"], 1);
+        assert_eq!(e.store.snapshot()["tasks"][0]["state"], "queued");
+        let mut config = e.config().unwrap();
+        config["maxConcurrentTasks"] = json!(2);
+        e.set_config(&config).unwrap();
+        wait_state(&e, "second", "running").await;
+        assert_eq!(e.snapshot()["activeSlots"], 2);
+        config["maxConcurrentTasks"] = json!(1);
+        e.set_config(&config).unwrap();
+        e.launch(json!({"taskId":"third","args":["version"]}))
+            .await
+            .unwrap();
+        e.stop("first");
+        done(&e, "first").await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert_eq!(e.store.snapshot()["tasks"][0]["state"], "queued");
+        assert_eq!(e.snapshot()["availableSlots"], 0);
+        e.stop("second");
+        done(&e, "second").await;
+        assert_eq!(done(&e, "third").await["state"], "success");
+        assert_eq!(e.snapshot()["activeSlots"], 0);
+    }
+    #[tokio::test]
+    async fn preview_uses_launch_filters_without_starting_a_process_or_writing_files() {
+        let (dir, e, _) = fixture();
+        let mut config = e.config().unwrap();
+        config["forwardFilterEnabled"] = json!(false);
+        e.set_config(&config).unwrap();
+        let result=e.preview_filter(&json!({"json":{"messages":[{"id":1,"text":"广告"},{"id":2,"text":"正常"}]},"spec":{"kind":"comment-forward","blockKeywordsText":"广告"}})).unwrap();
+        assert_eq!(result["removed"], 1);
+        assert_eq!(result["count"], 1);
+        assert_eq!(result["json"]["messages"][0]["id"], 2);
+        assert!(!dir.path().join("calls.jsonl").exists());
+        assert!(e
+            .preview_filter(&json!({"json":"x".repeat(256*1024)}))
+            .is_err());
+        assert_eq!(e.version().await.unwrap()["ok"], true);
+        let calls = std::fs::read_to_string(dir.path().join("calls.jsonl")).unwrap();
+        assert_eq!(calls.lines().count(), 1);
+        assert!(calls.contains("version"));
+        assert!(!calls.contains("ls"));
+    }
+    #[tokio::test]
+    async fn flood_wait_survives_split_output_without_replaying_commands() {
+        let (dir, e, events) = fixture();
+        e.launch(json!({"taskId":"limited","args":["wait-demo"]}))
+            .await
+            .unwrap();
+        let task = done(&e, "limited").await;
+        assert!(task["floodWaitUntil"].as_i64().unwrap() > 0);
+        assert!(events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(n, p)| n == "task:flood-wait" && p["seconds"] == 2));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("calls.jsonl"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
     }
     #[tokio::test]
     async fn failed_command_has_one_completion_and_bounded_logs_keep_unicode() {
@@ -334,11 +423,23 @@ print('任务完成')
     }
     #[tokio::test]
     async fn comment_rehearsal_does_not_write_completion_checkpoints() {
-        let (dir, e, _) = fixture();
+        let (dir, e, events) = fixture();
         let work = dir.path().join("rehearsal");
         e.launch(json!({"taskId":"rehearsal","spec":{"kind":"comment-forward","sourceChat":"source","targetChat":"@target","dryRun":true,"delayMs":0,"workDir":work}})).await.unwrap();
         assert_eq!(done(&e, "rehearsal").await["state"], "success");
         assert!(!work.join("progress.json").exists());
+        let stages: Vec<String> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(n, _)| n == "comment-forward:progress")
+            .map(|(_, p)| p["stage"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(stages.first().unwrap(), "export-list");
+        assert_eq!(stages.last().unwrap(), "rehearsal");
+        assert!(!stages
+            .iter()
+            .any(|s| s == "forward-post" || s == "forward-comments" || s == "done"));
         let calls = std::fs::read_to_string(dir.path().join("calls.jsonl")).unwrap();
         assert_eq!(calls.lines().count(), 1);
         assert!(!calls.contains("forward"));
@@ -504,4 +605,13 @@ worker.start().then(()=>console.log(JSON.stringify({status}))).catch(e=>{console
             println!("original parity: {name}");
         }
     }
+}
+
+#[test]
+fn flood_wait_parser_does_not_mistake_rpc_error_codes_for_seconds() {
+    use hopetdl_lib::engine::flood_wait_seconds;
+    assert_eq!(flood_wait_seconds("rpc FLOOD_WAIT_32 (code 420)"), Some(32));
+    assert_eq!(flood_wait_seconds("FLOOD_WAIT (12)"), Some(12));
+    assert_eq!(flood_wait_seconds("FLOOD_WAIT (code 420)"), None);
+    assert_eq!(flood_wait_seconds("normal progress 420"), None);
 }

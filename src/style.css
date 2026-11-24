@@ -1,28 +1,3 @@
-:root {
-  --bg: #0f1117;
-  --panel: #171a23;
-  --panel2: #202432;
-  --line: #2e3445;
-  --text: #eef1f8;
-  --muted: #9aa3b8;
-  --blue: #6aa7ff;
-  --green: #74d99f;
-  --red: #ff7d7d;
-}
-
-/* Light theme variables. When the html root has data-theme="light", these values will override the dark defaults. */
-:root[data-theme='light'] {
-  --bg: #f5f7fa;
-  --panel: #ffffff;
-  --panel2: #f7f8fb;
-  --line: #dcdfe6;
-  --text: #2e3445;
-  --muted: #6c7a96;
-  /* Accent colors similar to Element Plus light theme */
-  --blue: #409eff;
-  --green: #67c23a;
-  --red: #f56c6c;
-}
 * { box-sizing: border-box; }
 html,
 body,

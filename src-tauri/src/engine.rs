@@ -21,10 +21,38 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
     process::Command,
-    sync::Semaphore,
+    sync::Notify,
 };
 use tokio_util::sync::CancellationToken;
 
+struct Slots {
+    state: Mutex<(usize, usize)>, // limit, occupied
+    changed: Notify,
+}
+struct SlotLease(Arc<Slots>);
+impl Drop for SlotLease {
+    fn drop(&mut self) {
+        self.0.state.lock().unwrap().1 -= 1;
+        self.0.changed.notify_waiters();
+    }
+}
+impl Slots {
+    async fn acquire(self: Arc<Self>) -> SlotLease {
+        loop {
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            {
+                let mut state = self.state.lock().unwrap();
+                if state.1 < state.0 {
+                    state.1 += 1;
+                    return SlotLease(self.clone());
+                }
+            }
+            notified.await;
+        }
+    }
+}
 pub type Sink = Arc<dyn Fn(&str, Value) + Send + Sync>;
 pub struct Engine {
     pub store: Store,
@@ -32,7 +60,7 @@ pub struct Engine {
     sink: Sink,
     active: Mutex<HashMap<String, CancellationToken>>,
     commands: Mutex<HashMap<u32, CancellationToken>>,
-    slots: Arc<Semaphore>,
+    slots: Arc<Slots>,
     pub shutting_down: AtomicBool,
     pub schedule_running: Mutex<std::collections::HashSet<String>>,
     cache_lock: tokio::sync::Mutex<()>,
@@ -49,7 +77,10 @@ impl Engine {
             sink,
             active: Mutex::new(HashMap::new()),
             commands: Mutex::new(HashMap::new()),
-            slots: Arc::new(Semaphore::new(n)),
+            slots: Arc::new(Slots {
+                state: Mutex::new((n, 0)),
+                changed: Notify::new(),
+            }),
             shutting_down: AtomicBool::new(false),
             schedule_running: Mutex::new(Default::default()),
             cache_lock: tokio::sync::Mutex::new(()),
@@ -60,10 +91,61 @@ impl Engine {
         (self.sink)(event, data);
     }
     pub fn changed(&self) {
-        self.emit("runtime:snapshot", self.store.snapshot());
+        self.emit("runtime:snapshot", self.snapshot());
+    }
+    pub fn snapshot(&self) -> Value {
+        let mut snapshot = self.store.snapshot();
+        let state = self.slots.state.lock().unwrap();
+        snapshot["activeSlots"] = json!(state.1);
+        snapshot["availableSlots"] = json!(state.0.saturating_sub(state.1));
+        snapshot["maxConcurrentTasks"] = json!(state.0);
+        snapshot
+    }
+    pub fn set_config(&self, config: &Value) -> Result<Value> {
+        if !config.is_object() {
+            return Err("配置必须是对象".into());
+        }
+        write_json(&self.store.root.join("config.json"), config)?;
+        let config = self.config()?;
+        self.slots.state.lock().unwrap().0 = config["maxConcurrentTasks"]
+            .as_u64()
+            .unwrap_or(2)
+            .clamp(1, 8) as usize;
+        self.slots.changed.notify_waiters();
+        self.changed();
+        Ok(config)
     }
     pub fn config(&self) -> Result<Value> {
         self.store.config(&self.output)
+    }
+    pub fn filter_config(&self, spec: &Value) -> Result<Value> {
+        let mut effective = self.config()?;
+        if let Some(filters) = spec["filterConfig"].as_object() {
+            for key in [
+                "blockKeywordsText",
+                "keywordCaseSensitive",
+                "keywordRegexMode",
+            ] {
+                if let Some(value) = filters.get(key) {
+                    effective[key] = value.clone();
+                }
+            }
+        }
+        if spec["kind"] == "comment-forward" {
+            if let Some(options) = spec.as_object() {
+                for (key, value) in options {
+                    effective[key] = value.clone();
+                }
+            }
+        }
+        Ok(effective)
+    }
+    pub fn preview_filter(&self, payload: &Value) -> Result<Value> {
+        if payload["json"].to_string().len() > 256 * 1024 {
+            return Err("样本不能超过 256 KB".into());
+        }
+        Filter::new(&self.filter_config(&payload["spec"])?)
+            .map(|filter| filter.apply(payload["json"].clone()))
     }
     pub fn log(&self, id: &str, level: &str, s: &str) {
         if s.is_empty() {
@@ -82,6 +164,28 @@ impl Engine {
             let _ = f.write_all(s.as_bytes());
         }
         self.emit("tdl:log", json!({"taskId":id,"level":level,"text":s}));
+    }
+    fn flood_wait(&self, id: &str, line: &str) {
+        if let Some(seconds) = flood_wait_seconds(line) {
+            if !self.active.lock().unwrap().contains_key(id) {
+                return;
+            }
+            let until = millis().saturating_add(
+                i64::try_from(seconds)
+                    .unwrap_or(i64::MAX)
+                    .saturating_mul(1000),
+            );
+            match self.store.task(id, json!({"floodWaitUntil":until})) {
+                Ok(_) => {
+                    self.changed();
+                    self.emit(
+                        "task:flood-wait",
+                        json!({"taskId":id,"seconds":seconds,"until":until}),
+                    );
+                }
+                Err(err) => self.emit("runtime:error", json!(err)),
+            }
+        }
     }
     pub fn stop(&self, id: &str) -> Value {
         if let Some(token) = self.active.lock().unwrap().get(id) {
@@ -153,24 +257,7 @@ impl Engine {
         if !comment && !workflow && args.is_empty() {
             return Err("任务参数为空".into());
         }
-        let config = self.config()?;
-        let mut effective = config.clone();
-        if let Some(filters) = spec["filterConfig"].as_object() {
-            for key in [
-                "blockKeywordsText",
-                "keywordCaseSensitive",
-                "keywordRegexMode",
-            ] {
-                if let Some(value) = filters.get(key) {
-                    effective[key] = value.clone();
-                }
-            }
-        }
-        if comment {
-            for (k, v) in spec.as_object().unwrap() {
-                effective[k] = v.clone();
-            }
-        }
+        let effective = self.filter_config(&spec)?;
         if comment {
             comments::validate(&effective)?;
         }
@@ -247,7 +334,8 @@ impl Engine {
         let cwd = work.clone();
         let response_args = args.clone();
         tokio::spawn(async move {
-            let acquired = tokio::select! {p=e.slots.clone().acquire_owned()=>p.ok(),_=token.cancelled()=>None};
+            let acquired =
+                tokio::select! {p=e.slots.clone().acquire()=>Some(p),_=token.cancelled()=>None};
             let result = if let Some(_permit) = acquired {
                 if token.is_cancelled() {
                     Err("任务已停止".into())
@@ -509,6 +597,36 @@ impl Engine {
             stderr,
         })
     }
+    pub async fn version(self: &Arc<Self>) -> Result<Value> {
+        let config = self.config()?;
+        let token = CancellationToken::new();
+        let result = timed(
+            self.command(
+                "environment",
+                &["version".into()],
+                &json!({"tdlPath":config["tdlPath"]}),
+                None,
+                &token,
+                true,
+            ),
+            &token,
+            8,
+        )
+        .await;
+        let (ok, detail) = match result {
+            Ok(o) if o.code == 0 => (
+                true,
+                if o.stdout.trim().is_empty() {
+                    o.stderr.trim().to_owned()
+                } else {
+                    o.stdout.trim().to_owned()
+                },
+            ),
+            Ok(o) => (false, o.error()),
+            Err(err) => (false, err),
+        };
+        Ok(json!({"ok":ok,"detail":detail,"path":tdl_path(&config)}))
+    }
     pub async fn latest(self: &Arc<Self>, chat: &str) -> Result<Value> {
         if chat.trim().is_empty() {
             return Err("频道为空".into());
@@ -682,6 +800,7 @@ async fn read_stream<R: AsyncRead + Unpin>(
     let mut bytes = [0u8; 16384];
     let mut pending = Vec::new();
     let mut batch = String::new();
+    let mut wait_line = String::new();
     let mut saved = String::new();
     let mut interval = tokio::time::interval(Duration::from_millis(120));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -691,7 +810,14 @@ async fn read_stream<R: AsyncRead + Unpin>(
                 if n==0 {if !pending.is_empty(){batch.push_str(&String::from_utf8_lossy(&pending));}break;}
                 pending.extend_from_slice(&bytes[..n]);
                 let valid=match std::str::from_utf8(&pending){Ok(_)=>pending.len(),Err(err)=>if err.error_len().is_none(){err.valid_up_to()}else{pending.len()}};
-                let s=String::from_utf8_lossy(&pending[..valid]);batch.push_str(&s);saved.push_str(&s);pending.drain(..valid);
+                let s=String::from_utf8_lossy(&pending[..valid]);
+                wait_line.push_str(&s);
+                while let Some(end)=wait_line.find(['\n','\r']) {
+                    e.flood_wait(&id, &wait_line[..end]);
+                    wait_line.drain(..=end);
+                }
+                trim_tail(&mut wait_line, 2048);
+                batch.push_str(&s);saved.push_str(&s);pending.drain(..valid);
                 if capture && saved.len()>16*1024*1024{token.cancel();return Err("对话列表超过 16 MB，请使用过滤条件缩小范围".into());}
                 if !capture{trim_tail(&mut saved,32768);}
                 if batch.len()>=65536{e.log(&id,level,&batch);batch.clear();}
@@ -702,6 +828,7 @@ async fn read_stream<R: AsyncRead + Unpin>(
     if !batch.is_empty() {
         e.log(&id, level, &batch);
     }
+    e.flood_wait(&id, &wait_line);
     Ok(saved)
 }
 fn trim_tail(s: &mut String, limit: usize) {
@@ -720,4 +847,13 @@ pub async fn timed<T>(
 ) -> Result<T> {
     tokio::pin!(future);
     tokio::select! {v=&mut future=>v,_=tokio::time::sleep(Duration::from_secs(seconds))=>{token.cancel();let _=future.await;Err("检查超时".into())}}
+}
+
+/// Recognize an explicit wait duration, never the RPC error code 420.
+pub fn flood_wait_seconds(line: &str) -> Option<u64> {
+    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    PATTERN
+        .get_or_init(|| regex::Regex::new(r"(?i)\bFLOOD_WAIT(?:_|\s*[:(]\s*)(\d+)\b").unwrap())
+        .captures(line)
+        .and_then(|c| c[1].parse().ok())
 }

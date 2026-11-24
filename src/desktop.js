@@ -26,6 +26,7 @@ export async function initializeDesktop() {
     reportError: error => dispatch('runtime:error', String(error)),
     getConfig: () => request('config:get'), setConfig: config => request('config:set', config),
     checkEnvironment: () => request('environment:check'),
+    getTdlVersion: () => request('tdl:version'), previewFilter: payload => request('filter:preview', payload),
     run: payload => request('tdl:run', payload), runJob: payload => request('job:run', payload),
     stop: id => request('tdl:stop', id),
     startCommentForward: payload => request('comment-forward:start', payload),
@@ -52,7 +53,7 @@ export async function initializeDesktop() {
     onLog: subscribe('tdl:log'), onDone: subscribe('tdl:done'),
     onCommentForwardProgress: subscribe('comment-forward:progress'), onCommentForwardStatus: subscribe('comment-forward:status'),
     onNavigate: subscribe('app:navigate'), onSchedulerPaused: subscribe('app:scheduler-paused'), onTasksStopped: subscribe('app:tasks-stopped'),
-    onRuntimeSnapshot: subscribe('runtime:snapshot'), onRuntimeError: subscribe('runtime:error'),
+    onFloodWait: subscribe('task:flood-wait'), onRuntimeSnapshot: subscribe('runtime:snapshot'), onRuntimeError: subscribe('runtime:error'),
     exportMigration: async () => {
       const file = await dialog.save({ defaultPath: 'HopeTDL-backup.json', filters: [{ name: 'JSON', extensions: ['json'] }] })
       return file ? request('migration:export', file) : { cancelled: true }
@@ -65,7 +66,7 @@ export async function initializeDesktop() {
   window.tdlApi = api
   // Register all native listeners before the Vue application can launch a job.
   await Promise.all(['tdl:log', 'tdl:done', 'comment-forward:progress', 'comment-forward:status', 'app:navigate',
-    'app:scheduler-paused', 'app:tasks-stopped', 'runtime:snapshot', 'runtime:error'].map(event =>
+    'task:flood-wait', 'app:scheduler-paused', 'app:tasks-stopped', 'runtime:snapshot', 'runtime:error'].map(event =>
     listen(event.replaceAll(':', '-'), ({ payload }) => dispatch(event, payload))))
   const snapshot = await request('runtime:get')
   if (!api.runtimeSnapshot || snapshot.revision >= api.runtimeSnapshot.revision) api.runtimeSnapshot = snapshot

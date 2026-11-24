@@ -1,4 +1,6 @@
 <script setup>
+import AppIcon from '../../components/AppIcon.vue'
+import { progressPercent as completedPercent } from '../../taskProgress'
 import { useWorkbenchPreview } from '../../composables/useWorkbenchPreview'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { message, confirmHtml } from '../../ui/naive'
@@ -50,7 +52,7 @@ const targetTopicOptions = computed(() => targetTopics.value.map(topic => ({
   value: String(topic.id)
 })))
 const running = computed(() => ['queued','running'].includes(status.value))
-const progressPercent = computed(() => progress.value.total ? Math.round((progress.value.current / progress.value.total) * 100) : 0)
+const progressPercent = computed(() => completedPercent({},progress.value) ?? 0)
 
 const statusText = computed(() => ({
   idle: '待开始',
@@ -63,6 +65,8 @@ const statusText = computed(() => ({
 
 const stageText = computed(() => ({
   start: '开始处理',
+  'export-list': '读取主消息列表',
+  rehearsal: '演练检查完成（未逐条导出、未发送、未写断点）',
   skipped: '已跳过',
   'export-post': '导出主消息',
   'forward-post': '转发主消息',
@@ -82,9 +86,10 @@ const previewCommand = computed(() => {
     includeComments.value ? commandTextForSpec({ kind: 'export', chat: sourceChat.value || '<源聊天>', reply: '<id>', all: true, withContent: true, output: '<workDir>/comments/comments_<id>.json' }) : '# 未启用评论区处理',
     exportOnly.value ? '# 仅导出，不转发' : commandTextForSpec({ kind: 'forward', from: '<filtered json>', target: targetTopicId.value ? { routerFile: '<workDir>/target_router.txt' } : { peer: targetChat.value || '<目标聊天>' }, mode: mode.value })
   ]
-  return lines.join('\n')
+  return (dryRun.value ? [lines[0], lines[1], '# 演练：跳过逐条导出、过滤、转发；不写已完成断点'] : lines).join('\n')
 })
 
+function closeAdvanced(event) { if(event.key==='Escape')advancedMode.value=false }
 function getChatLabel(row, fallback) {
   const title = chatTitle(row)
   const id = chatId(row) || fallback
@@ -299,6 +304,7 @@ useSelectedChat(row => {
 })
 
 onMounted(() => {
+  window.addEventListener('keydown',closeAdvanced)
   loadHistory()
 
   // 没有 tdlApi 时（浏览器预览）直接跳过订阅，否则整个页面挂掉。
@@ -320,6 +326,7 @@ onMounted(() => {
 
 // 原来这两个订阅从不注销，页面每次重建都会多挂一份监听。
 onUnmounted(() => {
+  window.removeEventListener('keydown',closeAdvanced)
   if (offProgress) offProgress()
   if (offStatus) offStatus()
 })
@@ -341,7 +348,7 @@ const workbench = useWorkbenchPreview(spec, { taskId: currentTaskId, status, pro
       <div class="compact-checks">
         <n-checkbox v-model:checked="dryRun">演练模式</n-checkbox><n-checkbox v-model:checked="resume">断点续跑</n-checkbox><n-checkbox v-model:checked="includeComments">包含评论区</n-checkbox><n-checkbox v-model:checked="forwardMain">转发主消息</n-checkbox><n-checkbox v-model:checked="forwardComments">转发评论区</n-checkbox>
       </div>
-      <button type="button" class="adv-toggle" :aria-expanded="advancedMode" @click="advancedMode=!advancedMode"><span class="adv-chev" :class="{open:advancedMode}">▶</span>高级选项<span class="advanced-hint">过滤、话题、延迟…</span></button>
+      <button type="button" class="adv-toggle" :aria-expanded="advancedMode" @click="advancedMode=!advancedMode"><span class="adv-chev" :class="{open:advancedMode}"><AppIcon name="chevron" :size="12" /></span>高级选项<span class="advanced-hint">过滤、话题、延迟…</span></button>
       <section v-if="advancedMode" class="comment-advanced">
         <n-form-item label="话题 ID"><n-select v-if="targetTopics.length" v-model:value="targetTopicId" filterable tag clearable :options="targetTopicOptions" placeholder="选择话题或输入 ID" /><n-input v-else v-model:value="targetTopicId" placeholder="留空 = 默认聊天" /></n-form-item>
         <n-form-item label="模式"><n-radio-group v-model:value="mode"><n-radio-button value="direct">direct</n-radio-button><n-radio-button value="clone">clone</n-radio-button></n-radio-group></n-form-item>

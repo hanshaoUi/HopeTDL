@@ -24,6 +24,10 @@ function localTime() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 const runAt = ref(localTime());
+const groups = computed(() => [
+  {title:'活跃计划', rows:appState.schedules.filter(s=>s.enabled && !appState.schedulerPaused)},
+  {title:'暂停 / 停用', rows:appState.schedules.filter(s=>!s.enabled || appState.schedulerPaused)}
+].filter(g=>g.rows.length));
 const templates = computed(() => draft.value ? [draft.value, ...appState.tasks] : appState.tasks);
 const options = computed(() =>
   templates.value
@@ -162,7 +166,8 @@ function remove(s) {
       </button>
     </div>
     <div v-else class="plan-list">
-      <article v-for="s in appState.schedules" :key="s.id" class="plan-row">
+      <template v-for="group in groups" :key="group.title"><h2 class="plan-group-title">{{group.title}} · {{group.rows.length}}</h2>
+      <article v-for="s in group.rows" :key="s.id" class="plan-row">
         <div class="plan-icon"><AppIcon name="calendar" :size="22" /></div>
         <div class="plan-copy">
           <h3>{{ s.name || s.type }}</h3>
@@ -195,7 +200,7 @@ function remove(s) {
             删除
           </button>
         </div>
-      </article>
+      </article></template>
     </div>
     <n-modal v-model:show="showCreate">
       <section

@@ -38,7 +38,9 @@ const legacyViews = {
   download: 'newTask',
   upload: 'newTask',
   history: 'tasks',
-  taskCenter: 'tasks'
+  taskCenter: 'tasks',
+  workbench: 'newTask',
+  schedules: 'plans'
 }
 
 function resolveView(name) {
@@ -61,6 +63,7 @@ function applyRuntime(snapshot) {
   appState.tasks = snapshot.tasks.map(normalizeTaskRecord)
   appState.schedules = snapshot.schedules
   appState.schedulerPaused = !!snapshot.schedulerPaused
+  appState.runtimeSlots = { active: snapshot.activeSlots, available: snapshot.availableSlots, limit: snapshot.maxConcurrentTasks }
 }
 
 const runningTaskCount = computed(() => appState.tasks.filter(t=>['queued','running'].includes(t.state)).length)
@@ -84,7 +87,20 @@ function syncAppStatus() {
   })
 }
 
+function keyboard(event) {
+  if (event.defaultPrevented || event.isComposing) return
+  const editable = event.target?.closest?.('input,textarea,select,[contenteditable="true"],[role="textbox"],[role="combobox"]')
+  if (editable) return
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'l') {
+    event.preventDefault(); appState.showLog = !appState.showLog; return
+  }
+  if (event.ctrlKey || event.metaKey || event.altKey || document.querySelector('[aria-modal="true"]')) return
+  const view = ({'1':'overview','2':'chats','3':'newTask','4':'tasks','5':'plans','6':'settings',w:'newTask'})[event.key.toLowerCase()]
+  if (view) { event.preventDefault(); appState.activeView = view }
+  if (event.key === 'Escape') { appState.showLog = false; navExpanded.value = false; document.querySelectorAll('details[open]').forEach(d=>d.open=false) }
+}
 onMounted(async () => {
+  window.addEventListener('keydown', keyboard)
   const tdlApi = window.tdlApi
   if (tdlApi?.nativeRuntime) {
     applyRuntime(tdlApi.runtimeSnapshot)
@@ -163,6 +179,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('keydown', keyboard)
   if (stopScheduler) stopScheduler()
   if (offLog) offLog()
   if (offDone) offDone()

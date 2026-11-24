@@ -1,4 +1,5 @@
 <script setup>
+import AppIcon from './AppIcon.vue'
 import { ref, computed, nextTick, watch } from 'vue'
 import { confirmHtml, message } from '../ui/naive'
 import { appState } from '../state'
@@ -35,7 +36,7 @@ const errorCount = computed(() => appState.logErrorCount)
 
 const taskOptions = computed(() => [
   { label: '全部任务', value: '' },
-  ...appState.tasks.slice(0, 50).map(task => ({
+  ...appState.tasks.map(task => ({
     label: `${task.title || task.type} · ${task.status}`,
     value: task.id
   }))
@@ -141,7 +142,7 @@ watch(() => appState.logVersion, async () => {
   <section class="log-drawer" :class="{ expanded }">
     <!-- 收起态：只占一行。展开才吃屏幕高度。 -->
     <button class="log-bar" type="button" @click="expanded = !expanded">
-      <span class="log-bar-chevron" :class="{ up: !expanded }">▾</span>
+      <span class="log-bar-chevron" :class="{ up: !expanded }"><AppIcon name="chevron" :size="12" style="transform:rotate(90deg)" /></span>
       <span class="log-bar-label">任务日志</span>
       <span v-if="runningCount" class="log-pill running">运行中 {{ runningCount }}</span>
       <span v-if="errorCount" class="log-pill error">错误 {{ errorCount }}</span>
@@ -152,7 +153,7 @@ watch(() => appState.logVersion, async () => {
 
     <div v-if="expanded" class="log-panel-body">
       <div class="log-toolbar">
-        <n-select v-model:value="selectedTaskId" :options="taskOptions" size="small" style="width:190px" />
+        <n-select v-model:value="selectedTaskId" :options="taskOptions" filterable size="small" style="width:190px" />
         <n-input v-model:value="searchText" placeholder="搜索日志" size="small" clearable style="width:150px" />
         <span class="log-toolbar-spacer" />
         <n-switch v-model:value="autoScroll" size="small" />

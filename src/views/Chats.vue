@@ -1,4 +1,5 @@
 <script setup>
+import AppIcon from '../components/AppIcon.vue'
 import { ref, computed, onMounted } from 'vue'
 import { dialog, message } from '../ui/naive'
 import { commandTextForSpec, runJob } from '../utils'
@@ -334,7 +335,7 @@ onMounted(() => {
         :class="{ off: !isFavoriteChat(chatId(row)) }"
         :title="isFavoriteChat(chatId(row)) ? '取消收藏' : '收藏'"
         @click="toggleFav(row)"
-      >★</button>
+      ><AppIcon name="star" :size="14" /></button>
 
       <div class="chat-main">
         <div class="chat-line">
