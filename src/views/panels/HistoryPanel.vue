@@ -50,12 +50,13 @@ function applyDownload(row) {
   appState.activeView = 'newTask'
 }
 
-function showFile(filePath) {
+async function showFile(filePath) {
   if (!filePath) {
     message.info('没有可打开的文件路径')
     return
   }
-  window.tdlApi.showItemInFolder(filePath)
+  if(/^https?:\/\//i.test(filePath)){message.info('此来源是消息链接，没有本地文件');return}
+  try{await window.tdlApi?.showItemInFolder(filePath)}catch(error){message.error(String(error))}
 }
 
 async function openPath(path) {

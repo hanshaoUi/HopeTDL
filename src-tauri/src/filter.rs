@@ -166,7 +166,33 @@ pub fn media_kind(v: &Value) -> &'static str {
                     .iter()
                     .any(|a| k.contains(a))
             {
-                out.push(text(x));
+                let value = text(x);
+                let media_field = [
+                    "file", "path", "mime", "media", "document", "photo", "video",
+                ]
+                .iter()
+                .any(|a| k.contains(a));
+                let metadata_type = k == "type"
+                    && ["message", "service", "message_service"]
+                        .contains(&value.to_lowercase().as_str());
+                if !value.trim().is_empty()
+                    && !metadata_type
+                    && (depth > 0
+                        || media_field
+                        || k == "type"
+                            && [
+                                "photo",
+                                "video",
+                                "image",
+                                "document",
+                                "audio",
+                                "sticker",
+                                "animation",
+                            ]
+                            .contains(&value.to_lowercase().as_str()))
+                {
+                    out.push(value);
+                }
             } else if (x.is_object() || x.is_array())
                 && ["file", "media", "document", "photo", "video", "content"]
                     .iter()
@@ -250,8 +276,7 @@ impl Filter {
                 regex::escape(&s)
             };
             let re = Regex::with_flags(&source, flags)
-                .or_else(|_| Regex::with_flags(&regex::escape(&s), flags))
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| format!("无效关键词正则 {s}: {e}"))?;
             rules.push((s, re));
         }
         let enabled = !rules.is_empty()
@@ -381,7 +406,9 @@ impl Filter {
                             hits.push(h);
                         }
                     }
-                    self.rewrite(item, 0, stats);
+                    if self.enabled {
+                        self.rewrite(item, 0, stats);
+                    }
                     ids.insert(message_id(item).unwrap());
                 }
                 self.visit(item, key, stats, hits, ids);

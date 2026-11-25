@@ -58,7 +58,8 @@ pub struct Engine {
     pub store: Store,
     pub output: PathBuf,
     sink: Sink,
-    active: Mutex<HashMap<String, CancellationToken>>,
+    log_lock: Mutex<()>,
+    pub(crate) active: Mutex<HashMap<String, CancellationToken>>,
     commands: Mutex<HashMap<u32, CancellationToken>>,
     slots: Arc<Slots>,
     pub shutting_down: AtomicBool,
@@ -75,6 +76,7 @@ impl Engine {
             store,
             output,
             sink,
+            log_lock: Mutex::new(()),
             active: Mutex::new(HashMap::new()),
             commands: Mutex::new(HashMap::new()),
             slots: Arc::new(Slots {
@@ -125,6 +127,14 @@ impl Engine {
                 "blockKeywordsText",
                 "keywordCaseSensitive",
                 "keywordRegexMode",
+                "forwardFilterEnabled",
+                "filterKeywordsText",
+                "filterKeywordAction",
+                "filterKeywordReplacement",
+                "removeLinks",
+                "blockImages",
+                "blockVideos",
+                "blockTextOnly",
             ] {
                 if let Some(value) = filters.get(key) {
                     effective[key] = value.clone();
@@ -134,7 +144,11 @@ impl Engine {
         if spec["kind"] == "comment-forward" {
             if let Some(options) = spec.as_object() {
                 for (key, value) in options {
-                    effective[key] = value.clone();
+                    if !["keywordCaseSensitive", "keywordRegexMode"].contains(&key.as_str())
+                        || !text(&spec["blockKeywordsText"]).trim().is_empty()
+                    {
+                        effective[key] = value.clone();
+                    }
                 }
             }
         }
@@ -144,13 +158,22 @@ impl Engine {
         if payload["json"].to_string().len() > 256 * 1024 {
             return Err("样本不能超过 256 KB".into());
         }
-        Filter::new(&self.filter_config(&payload["spec"])?)
-            .map(|filter| filter.apply(payload["json"].clone()))
+        let sample = payload["json"].clone();
+        let sample = if sample.is_object()
+            && filter::message_id(&sample).is_some()
+            && !sample["messages"].is_array()
+        {
+            json!({"messages":[sample]})
+        } else {
+            sample
+        };
+        Filter::new(&self.filter_config(&payload["spec"])?).map(|filter| filter.apply(sample))
     }
     pub fn log(&self, id: &str, level: &str, s: &str) {
         if s.is_empty() {
             return;
         }
+        let _log_guard = self.log_lock.lock().unwrap();
         let dir = self.store.root.join("logs");
         let _ = fs::create_dir_all(&dir);
         let file = dir.join(format!("{}.log", safe_id(id)));
@@ -163,6 +186,7 @@ impl Engine {
         if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(file) {
             let _ = f.write_all(s.as_bytes());
         }
+        drop(_log_guard);
         self.emit("tdl:log", json!({"taskId":id,"level":level,"text":s}));
     }
     fn flood_wait(&self, id: &str, line: &str) {
@@ -203,6 +227,9 @@ impl Engine {
             t.cancel();
         }
     }
+    pub fn has_active_tasks(&self) -> bool {
+        !self.active.lock().unwrap().is_empty()
+    }
     pub fn has_processes(&self) -> bool {
         !self.commands.lock().unwrap().is_empty()
     }
@@ -221,6 +248,18 @@ impl Engine {
             .unwrap_or(json!({"ok":false,"message":"当前没有正在运行的评论区转发任务"}))
     }
     pub async fn launch(self: &Arc<Self>, payload: Value) -> Result<Value> {
+        self.launch_inner(payload, None).await
+    }
+    pub async fn launch_wait(self: &Arc<Self>, payload: Value) -> Result<Value> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.launch_inner(payload, Some(tx)).await?;
+        rx.await.map_err(|_| "任务结果通道已关闭".to_owned())?
+    }
+    async fn launch_inner(
+        self: &Arc<Self>,
+        payload: Value,
+        completion: Option<tokio::sync::oneshot::Sender<Result<Value>>>,
+    ) -> Result<Value> {
         if self.shutting_down.load(Ordering::SeqCst) {
             return Err("应用正在退出".into());
         }
@@ -269,6 +308,9 @@ impl Engine {
         let token = CancellationToken::new();
         {
             let mut active = self.active.lock().unwrap();
+            if self.shutting_down.load(Ordering::SeqCst) {
+                return Err("应用正在退出".into());
+            }
             if active.contains_key(&id) {
                 return Err("相同任务正在运行".into());
             }
@@ -328,6 +370,11 @@ impl Engine {
             }
             return Err(e);
         }
+        let task_lease = TaskLease {
+            engine: self.clone(),
+            id: id.clone(),
+            comment,
+        };
         self.changed();
         let e = self.clone();
         let task_id = id.clone();
@@ -340,12 +387,11 @@ impl Engine {
                 if token.is_cancelled() {
                     Err("任务已停止".into())
                 } else {
-                    let _ = e.store.task(
-                        &task_id,
-                        json!({"state":"running","status":"运行中","startedAt":now()}),
-                    );
+                    let started = e.store.task(&task_id, json!({"state":"running","status":"运行中","startedAt":now(),"floodWaitUntil":null}));
                     e.changed();
-                    if comment {
+                    if let Err(err) = started {
+                        Err(format!("无法保存任务开始状态，未执行: {err}"))
+                    } else if comment {
                         comments::run(
                             e.clone(),
                             &task_id,
@@ -372,7 +418,7 @@ impl Engine {
                     .map(|v| v["code"].as_i64().unwrap_or(0))
                     .unwrap_or(-1)
             };
-            let err = result.as_ref().err().cloned().unwrap_or_else(|| {
+            let mut err = result.as_ref().err().cloned().unwrap_or_else(|| {
                 result
                     .as_ref()
                     .ok()
@@ -399,13 +445,23 @@ impl Engine {
                 "partial" => "部分成功",
                 _ => "成功",
             };
-            if let Err(storage_error)=e.store.task(&task_id,json!({"state":state,"status":label,"finishedAt":now(),"exitCode":code,"errorMessage":err,"failedCount":failed_count})){
-                e.emit("runtime:error",json!(storage_error));
+            if failed_count > 0 && err.is_empty() {
+                err = format!("部分消息处理失败，共 {failed_count} 组，请查看失败记录");
             }
-            e.active.lock().unwrap().remove(&task_id);
-            if comment {
-                e.comment_active.store(false, Ordering::SeqCst);
+            let terminal = json!({"state":state,"status":label,"finishedAt":now(),"exitCode":code,"errorMessage":err,"failedCount":failed_count,"failedIds":result.as_ref().ok().map(|v|v["failedIds"].clone()).unwrap_or(json!([])),"floodWaitUntil":null});
+            let saved = e.store.task(&task_id, terminal.clone());
+            if let Err(storage_error) = &saved {
+                e.store
+                    .volatile_terminal(&task_id, &terminal, storage_error);
+                e.emit(
+                    "runtime:error",
+                    json!(format!(
+                        "任务已结束，但状态保存失败；计划已暂停，请检查磁盘: {storage_error}"
+                    )),
+                );
             }
+            let completion_result = saved.map(|_| terminal);
+            drop(task_lease);
             e.log(
                 &task_id,
                 if code == 0 { "info" } else { "error" },
@@ -416,6 +472,9 @@ impl Engine {
             }
             e.changed();
             e.emit("tdl:done",json!({"taskId":task_id,"code":code,"stopped":stopped,"errorTail":err,"failedCount":failed_count}));
+            if let Some(tx) = completion {
+                let _ = tx.send(completion_result);
+            }
         });
         Ok(
             json!({"ok":true,"taskId":id,"args":response_args,"workDir":work,"message":"任务已加入后台队列"}),
@@ -434,6 +493,9 @@ impl Engine {
             let from = jobs::arg(&args, &["--from"]);
             if from.is_empty() {
                 return Err("转发任务缺少源文件".into());
+            }
+            if jobs::arg(&args, &["--to"]).trim().is_empty() {
+                return Err("转发任务缺少目标对话，未执行".into());
             }
             let filter = Filter::new(c)?;
             if from.starts_with("https://t.me/") || from.starts_with("https://telegram.me/") {
@@ -519,6 +581,10 @@ impl Engine {
         if token.is_cancelled() {
             return Err("任务已停止".into());
         }
+        if self.active.lock().unwrap().contains_key(id) {
+            let _ = self.store.task(id, json!({"floodWaitUntil":null}));
+            self.changed();
+        }
         let mut all = jobs::global_args(c);
         all.extend_from_slice(args);
         let bin = tdl_path(c);
@@ -567,30 +633,57 @@ impl Engine {
         if self.shutting_down.load(Ordering::SeqCst) {
             token.cancel();
         }
+        let process_token = token.child_token();
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
         let e = self.clone();
         let task = id.to_owned();
-        let reader_token = token.clone();
+        let reader_token = process_token.clone();
         let out = tokio::spawn(async move {
-            read_stream(e, task, "stdout", stdout, capture, reader_token).await
+            let result =
+                read_stream(e, task, "stdout", stdout, capture, reader_token.clone()).await;
+            if result.is_err() {
+                reader_token.cancel();
+            }
+            result
         });
         let e = self.clone();
         let task = id.to_owned();
-        let reader_token = token.clone();
+        let reader_token = process_token.clone();
         let err = tokio::spawn(async move {
-            read_stream(e, task, "stderr", stderr, false, reader_token).await
+            let result = read_stream(e, task, "stderr", stderr, false, reader_token.clone()).await;
+            if result.is_err() {
+                reader_token.cancel();
+            }
+            result
         });
         let status = tokio::select! {
+            biased;
             s=child.wait()=>s.map_err(|e|e.to_string()),
-            _=token.cancelled()=>{
+            _=process_token.cancelled()=>{
                 #[cfg(unix)] if let Some(pid)=pid{unsafe{libc::kill(-(pid as i32),libc::SIGKILL);}}
                 #[cfg(windows)] if let Some(pid)=pid{let _=Command::new("taskkill").args(["/PID",&pid.to_string(),"/F","/T"]).output().await;}
                 let _=child.kill().await;let _=child.wait().await;Err("任务已停止".into())
             }
         };
-        let stdout = out.await.map_err(|e| e.to_string())??;
-        let stderr = err.await.map_err(|e| e.to_string())??;
+        let (stdout, stderr) = tokio::join!(out, err);
+        if process_token.is_cancelled() {
+            #[cfg(unix)]
+            if let Some(pid) = pid {
+                unsafe {
+                    libc::kill(-(pid as i32), libc::SIGKILL);
+                }
+            }
+            #[cfg(windows)]
+            if let Some(pid) = pid {
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/F", "/T"])
+                    .output()
+                    .await;
+            }
+        }
+        let stdout = stdout.map_err(|e| e.to_string())??;
+        let stderr = stderr.map_err(|e| e.to_string())??;
         Ok(CommandOutput {
             code: status?.code().unwrap_or(1),
             stdout,
@@ -714,7 +807,7 @@ impl Engine {
         let chats = current["chats"].as_array().cloned().unwrap_or_default();
         let updated = current["updatedAt"].as_i64().unwrap_or(0);
         Ok(
-            json!({"ns":ns,"chats":chats,"count":chats.len(),"updatedAt":updated,"updatedAtText":if updated>0{chrono::DateTime::from_timestamp_millis(updated).unwrap().to_rfc3339()}else{String::new()},"ttlDays":days,"expired":updated==0||(millis()-updated)as f64>days*86400000.0,"cacheFile":file}),
+            json!({"ns":ns,"chats":chats,"count":chats.len(),"updatedAt":updated,"updatedAtText":if updated>0{chrono::DateTime::from_timestamp_millis(updated).map(|d|d.to_rfc3339()).unwrap_or_default()}else{String::new()},"ttlDays":days,"expired":updated==0||(millis()-updated)as f64>days*86400000.0,"cacheFile":file}),
         )
     }
 }
@@ -759,6 +852,19 @@ fn path_env() -> std::ffi::OsString {
         }
     }
     std::env::join_paths(paths).unwrap_or(current)
+}
+struct TaskLease {
+    engine: Arc<Engine>,
+    id: String,
+    comment: bool,
+}
+impl Drop for TaskLease {
+    fn drop(&mut self) {
+        self.engine.active.lock().unwrap().remove(&self.id);
+        if self.comment {
+            self.engine.comment_active.store(false, Ordering::SeqCst);
+        }
+    }
 }
 pub struct CommandOutput {
     pub code: i32,
@@ -806,6 +912,7 @@ async fn read_stream<R: AsyncRead + Unpin>(
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
+            _=token.cancelled()=>break,
             n=reader.read(&mut bytes)=>{let n=n.map_err(|e|e.to_string())?;
                 if n==0 {if !pending.is_empty(){batch.push_str(&String::from_utf8_lossy(&pending));}break;}
                 pending.extend_from_slice(&bytes[..n]);
@@ -853,7 +960,35 @@ pub async fn timed<T>(
 pub fn flood_wait_seconds(line: &str) -> Option<u64> {
     static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     PATTERN
-        .get_or_init(|| regex::Regex::new(r"(?i)\bFLOOD_WAIT(?:_|\s*[:(]\s*)(\d+)\b").unwrap())
+        .get_or_init(|| regex::Regex::new(r"(?i)\bFLOOD_WAIT(?:_|\s*[:(=]\s*)(\d+)\b|\bFLOOD_WAIT\b[^\r\n]{0,80}?\b(?:wait|retry after)\s+(\d+)\s*(?:s\b|seconds?\b)").unwrap())
         .captures(line)
-        .and_then(|c| c[1].parse().ok())
+        .and_then(|c| c.get(1).or_else(||c.get(2)).and_then(|m|m.as_str().parse().ok()))
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_rechecks_registration_under_the_active_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let e = Engine::new(
+            root.path().into(),
+            root.path().join("out"),
+            Arc::new(|_, _| {}),
+        )
+        .unwrap();
+        let guard = e.active.lock().unwrap();
+        let other = e.clone();
+        let pending = tokio::spawn(async move {
+            other
+                .launch(json!({"taskId":"late","args":["version"]}))
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        e.shutting_down.store(true, Ordering::SeqCst);
+        drop(guard);
+        assert!(pending.await.unwrap().is_err());
+        assert!(!e.has_active_tasks());
+        assert_eq!(e.store.snapshot()["tasks"], json!([]));
+    }
 }

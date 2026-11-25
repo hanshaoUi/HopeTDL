@@ -14,7 +14,7 @@ function exportArgs(spec) {
   pushValue(args, '-c', spec.chat)
   if (spec.reply !== undefined && spec.reply !== null && spec.reply !== '') {
     pushValue(args, '--reply', spec.reply)
-  } else if (spec.selector && spec.selector.type !== 'all') {
+  } else if (spec.selector && spec.selector.type !== 'all' && String(spec.selector.input ?? '').trim()) {
     pushValue(args, '-T', spec.selector.type)
     pushValue(args, '-i', spec.selector.input)
   }
@@ -30,7 +30,9 @@ function forwardTarget(target) {
   if (target.routerFile) return String(target.routerFile)
   const peer = String(target.peer || '')
   if (!peer || target.thread === undefined || target.thread === null || target.thread === '') return peer
-  return `{ Peer: "${peer}", Thread: ${Number(target.thread)} }`
+  const raw=String(target.thread)
+  if(!/^\d+$/.test(raw)||BigInt(raw)>18446744073709551615n)throw new TypeError('话题 ID 必须是非负整数')
+  return `{ Peer: ${JSON.stringify(peer)}, Thread: ${BigInt(raw).toString()} }`
 }
 
 function forwardArgs(spec) {

@@ -57,7 +57,10 @@ pub fn to_args(s: &Value) -> Result<Vec<String>> {
             val(&mut a, "-c", &s["chat"]);
             if !text(&s["reply"]).is_empty() {
                 val(&mut a, "--reply", &s["reply"]);
-            } else if s["selector"].is_object() && s["selector"]["type"] != "all" {
+            } else if s["selector"].is_object()
+                && s["selector"]["type"] != "all"
+                && !text(&s["selector"]["input"]).trim().is_empty()
+            {
                 val(&mut a, "-T", &s["selector"]["type"]);
                 val(&mut a, "-i", &s["selector"]["input"]);
             }

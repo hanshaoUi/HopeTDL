@@ -95,7 +95,7 @@ const FAILURE_RULES = [
   // 「对话填错了」在实际使用里比命令行参数写错更常见，tdl 报的是 USERNAME_NOT_OCCUPIED
   // 这类 rpc 错误码，归到参数错误 —— 要改的确实是你填进表单的那个值。
   { category: 'arguments', label: '参数错误', test: /flag provided but not defined|unknown (?:flag|command|shorthand)|invalid|usage:|username_not_occupied|peer_id_invalid|failed to get peer|peer not found|chat not found|参数/ },
-  { category: 'environment', label: '环境或路径', test: /启动失败|enoent|command not found|no such file|executable file not found|tdl 路径|找不到/ }
+  { category: 'environment', label: '环境或路径', test: /启动(?: tdl )?失败|enoent|command not found|no such file|executable file not found|tdl 路径|找不到/ }
 ]
 
 function autoSummary(state, task, failureLabel) {
@@ -103,7 +103,7 @@ function autoSummary(state, task, failureLabel) {
   if (state === TASK_STATE.STOPPED) return '任务已停止'
   if (state === TASK_STATE.INTERRUPTED) return '任务在上次退出时中断'
   if (state === TASK_STATE.SUCCESS) return '任务已完成'
-  if (state === TASK_STATE.PARTIAL) return `部分成功，失败 ${Number(task.failedCount || 0)} 条`
+  if (state === TASK_STATE.PARTIAL) return Number(task.failedCount)>0 ? `部分成功，失败 ${Number(task.failedCount)} 条` : '部分成功（失败数量未知）'
   if (state === TASK_STATE.FAILED) {
     const reason = String(task.errorMessage || '').trim()
       || (task.exitCode === null || task.exitCode === undefined ? '请检查日志' : `退出码 ${task.exitCode}`)
@@ -121,10 +121,8 @@ export function normalizeTaskRecord(task = {}) {
   let failureCategory = task.failureCategory || ''
   let failureLabel = task.failureLabel || ''
   if (!failureCategory && state === TASK_STATE.FAILED) {
-    // exitCode -1 只有 spawn 失败会出现，那一定是找不到 tdl，不用再看文本。
-    const matched = task.exitCode === -1
-      ? FAILURE_RULES.find(rule => rule.category === 'environment')
-      : FAILURE_RULES.find(rule => rule.test.test(errorText))
+    // Validation and stream failures also use -1; classify the actual error.
+    const matched = FAILURE_RULES.find(rule => rule.test.test(errorText))
     failureCategory = matched?.category || 'runtime'
     failureLabel = matched?.label || '运行失败'
   }

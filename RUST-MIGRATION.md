@@ -37,7 +37,7 @@ npm run test:rust       # Rust 核心测试；其中跨语言参数比对需要 
 
 macOS 使用 `npm run build:mac`；Windows 在 Windows 上运行 `npm run build:win`。此轮已验证 macOS，Windows / Linux 还需要各自构建与真机回归。
 
-旧 Electron 开发入口为 `npm run dev:electron`，打包入口为 `npm run build:electron`。迁移导出使用旧入口。原版表单中的导出后转发、评论媒体下载仍由界面串联；已启动的单步任务和评论搬运由 Rust 后台执行。
+旧 Electron 开发入口为 `npm run dev:electron`，打包入口为 `npm run build:electron`。迁移导出使用旧入口。Rust 版的导出后转发、评论媒体下载作为完整 workflow 提交给后台，切页不影响后续步骤；存为计划时保留真实路径和全部参数。旧 Electron 兼容入口保留界面串联方式。
 
 `HOPETDL_DATA_DIR=/绝对路径` 可启用隔离测试数据目录，此时不会自动复制旧配置。测试使用假的 tdl 子进程，避免测试流程向真实对话发送消息。
 
@@ -56,10 +56,20 @@ macOS 使用 `npm run build:mac`；Windows 在 Windows 上运行 `npm run build:
 HOPETDL_ORIGINAL_ROOT=/path/to/original/HopeTDL cargo test --manifest-path src-tauri/Cargo.toml --no-default-features comment_worker_matches_original -- --ignored --nocapture
 ```
 
-已知保留的安全差异：演练不写入已完成断点，避免正式续跑漏发；损坏 JSON 直接报错。上述模拟对比不代表已验证真实 Telegram 权限、话题可用性或实际发送。
+已知保留的安全差异：演练不写入已完成断点，避免正式续跑漏发；普通损坏 JSON 直接报错，评论导出缓存损坏则备份后重新读取来源。上述模拟对比不代表已验证真实 Telegram 权限、话题可用性或实际发送。
 
 ## GitHub 自动构建
 
 `.github/workflows/build.yml` 使用 npm 锁文件和 Rust 工具链构建 Rust/Tauri 版。PR 运行 JS / Rust 核心测试；推送 main、手动运行或推送 v 开头的版本标签时，在测试通过后分别构建 macOS Apple Silicon、macOS Intel、Windows x64 和 Linux x64。安装包在 Actions 页面的 Artifacts 中保留 14 天；版本标签还会生成 GitHub Release 并附上安装包。
 
 macOS 提供 DMG 和 app.zip，Windows 提供 NSIS exe，Linux 提供 deb 和 AppImage。构建机无需 Telegram 账号或聊天数据；tdl 仍为用户单独安装的外部工具。macOS 当前采用本地临时签名，未配置 Apple 公证；Windows 未配置发行证书。构建成功不等同于完成各平台真实业务验收。
+
+## 2026-11-25 v3 审计修复
+
+- 评论断点增加 `steps[id].postDone/commentsDone`、任务上下文与所选范围；成功子步骤及时落盘，组完成先写盘再发 done 事件。旧的 done/failed 格式仍可读取；旧断点缺少上下文时无法追溯验证原目标。显式续跑要求原目录含有效 progress.json。
+- 导出缓存先验证 JSON 与已知 ID 范围，损坏或越界文件保留备份后重导。新导出附带 `.cache.json`，绑定账号空间、来源与选择器；扩展范围时重新读取列表。无标记旧缓存仍兼容，但没有来源与完整范围证明，无法据此保证覆盖全部消息。
+- 调度通过完成通道取得任务结果，任务中心清理记录不影响计划游标；计划结束只合并运行字段，保留期间的用户编辑。退出与任务登记在 active 锁下协调。
+- 状态落盘失败时保留内存中的真实终态、报告持久化错误并暂停自动计划；这不是磁盘恢复成功的保证。导入期间阻止新任务登记，配置经 set_config 更新并发上限；多文件导入仍依赖事前备份，不是跨文件事务。
+- 有明确秒数的 FLOOD_WAIT 在“出错继续”时等待后再处理下一组，不自动重发失败组；终态与新子进程会清除旧倒计时。
+- 主消息成功、评论失败的已确认子步骤可跳过；tdl 批次内部部分发送、远端已接受但响应丢失、成功后断点落盘失败，仍无法承诺 exactly-once。
+- 本轮回归使用假 tdl；没有真实 Telegram 发送。Windows/Linux 本轮修改尚未做原生业务验证。

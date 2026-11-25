@@ -28,6 +28,9 @@ pub fn start(e: Arc<Engine>) {
                 .map(|s| text(&s["id"]))
                 .collect();
             for id in due {
+                if e.schedule_running.lock().unwrap().contains(&id) {
+                    continue;
+                }
                 let e = e.clone();
                 tokio::spawn(async move {
                     if let Err(err) = execute(e.clone(), &id, false).await {
@@ -84,6 +87,7 @@ impl Drop for Running {
 }
 pub async fn execute(e: Arc<Engine>, id: &str, manual: bool) -> Result<Value> {
     {
+        let _maintenance = e.active.lock().unwrap();
         let mut running = e.schedule_running.lock().unwrap();
         if !running.insert(id.into()) {
             return Err("该计划正在执行".into());
@@ -93,32 +97,44 @@ pub async fn execute(e: Arc<Engine>, id: &str, manual: bool) -> Result<Value> {
         e: e.clone(),
         id: id.into(),
     };
-    let mut s = e.store.snapshot()["schedules"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|s| s["id"] == id)
-        .cloned()
-        .ok_or("计划不存在")?;
-    if !manual
-        && (s["enabled"] != true
-            || s["nextRunAt"].as_i64().unwrap_or(i64::MAX) > millis()
-            || e.store.snapshot()["schedulerPaused"] == true)
-    {
-        return Ok(json!({"skipped":true}));
-    }
-    s["lastCheckedAt"] = json!(now());
-    if !manual {
-        if s["mode"] == "once" {
-            s["enabled"] = json!(false);
-            s["nextRunAt"] = json!(0);
-        } else {
-            s["nextRunAt"] =
-                json!(millis() + s["intervalMinutes"].as_i64().unwrap_or(60).max(1) * 60000);
+    let mut s = e.store.update(|data| {
+        let paused = data["schedulerPaused"] == true;
+        let schedule = data["schedules"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|s| s["id"] == id)
+            .ok_or("计划不存在")?;
+        if !manual
+            && (schedule["enabled"] != true
+                || schedule["nextRunAt"].as_i64().unwrap_or(i64::MAX) > millis()
+                || paused)
+        {
+            return Ok(None);
         }
-    }
-    event(&mut s, "check", "开始检查计划");
-    save(&e, &s)?;
+        if !manual {
+            if schedule["mode"] == "once" {
+                schedule["enabled"] = json!(false);
+                schedule["nextRunAt"] = json!(0);
+            } else {
+                schedule["nextRunAt"] = json!(
+                    millis()
+                        + schedule["intervalMinutes"]
+                            .as_i64()
+                            .unwrap_or(60)
+                            .clamp(1, 525600)
+                            * 60000
+                );
+            }
+        }
+        schedule["lastCheckedAt"] = json!(now());
+        event(schedule, "check", "开始检查计划");
+        Ok(Some(schedule.clone()))
+    })?;
+    let Some(mut s) = s.take() else {
+        return Ok(json!({"skipped":true}));
+    };
+    e.changed();
     let result = perform(e.clone(), &mut s).await;
     if let Err(err) = &result {
         s["lastStatus"] = json!(format!("执行失败: {err}"));
@@ -234,36 +250,14 @@ async fn run_payload_wait(e: Arc<Engine>, s: &Value, mut payload: Value) -> Resu
     task["scheduleId"] = s["id"].clone();
     task["type"] = s["type"].clone();
     payload["task"] = task;
-    e.launch(payload).await?;
-    loop {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let data = e.store.snapshot();
-        let task = data["tasks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|t| t["id"] == id)
-            .ok_or("任务记录丢失")?;
-        match task["state"].as_str().unwrap_or("") {
-            "success" => return Ok(()),
-            "failed" | "stopped" | "interrupted" | "partial" => {
-                return Err(format!("计划任务未成功: {}", text(&task["errorMessage"])))
-            }
-            _ => {}
-        }
+    let task = e.launch_wait(payload).await?;
+    if task["state"] == "success" {
+        Ok(())
+    } else {
+        Err(format!("计划任务未成功: {}", text(&task["errorMessage"])))
     }
 }
-fn save(e: &Engine, s: &Value) -> Result<()> {
-    e.store.update(|d| {
-        let a = d["schedules"].as_array_mut().unwrap();
-        if let Some(old) = a.iter_mut().find(|x| x["id"] == s["id"]) {
-            *old = s.clone();
-        }
-        Ok(())
-    })?;
-    e.changed();
-    Ok(())
-}
+
 fn save_runtime(e: &Engine, s: &Value) -> Result<()> {
     e.store.update(|d| {
         if let Some(old) = d["schedules"]

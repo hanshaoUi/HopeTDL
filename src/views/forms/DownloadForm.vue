@@ -86,25 +86,14 @@ const spec = computed(() => ({
   }
 }))
 
-const previewCommand = computed(() => {
-  if (sourceType.value !== 'comments') return commandTextForSpec(spec.value)
-  const ids = commentsIds.value.length ? commentsIds.value : ['<主消息ID>']
-  const lines = [
-    '# 评论区下载会先导出评论区 JSON，再下载其中媒体'
-  ]
-  for (const id of ids) {
-    lines.push(commandTextForSpec({
-      kind: 'export',
-      chat: commentsChat.value || '<源频道/群组>',
-      reply: id,
-      all: true,
-      withContent: true,
-      output: commentExportFile('<workDir>', id)
-    }))
-  }
-  lines.push(commandTextForSpec(spec.value))
-  return lines.join('\n')
+const commentDraftDirectory = computed(defaultCommentsWorkDir)
+const executableSpec = computed(()=>{
+  if(sourceType.value!=='comments')return spec.value
+  const outputs=commentsIds.value.map(id=>commentExportFile(commentDraftDirectory.value,id))
+  return {kind:'workflow',steps:[...commentsIds.value.map((id,i)=>({kind:'export',chat:commentsChat.value,reply:id,all:true,withContent:true,output:outputs[i]})),{...spec.value,source:{type:'file',items:outputs}}]}
 })
+
+const previewCommand = computed(() => commandTextForSpec(executableSpec.value))
 
 async function pickDir() {
   const selected = await window.tdlApi.openDirectory({ defaultPath: dir.value || await defaultOutputDir() })
@@ -166,6 +155,7 @@ async function run() {
       message.error('请填写评论区所属的源频道 / 群组')
       return
     }
+    if(commentsIds.value.some(id=>!/^\d+$/.test(id)||!Number.isSafeInteger(Number(id))||Number(id)<=0)){message.error('主消息 ID 必须是正的安全整数');return}
     if (!commentsIds.value.length) {
       message.error('请至少填写一个主消息 ID')
       return
@@ -204,7 +194,8 @@ async function run() {
     return
   }
 
-  const workDir = defaultCommentsWorkDir()
+  if(window.tdlApi?.nativeRuntime){await runJob(executableSpec.value,'下载评论区媒体');return}
+  const workDir = commentDraftDirectory.value
   const exportedFiles = []
   for (const id of commentsIds.value) {
     const output = commentExportFile(workDir, id)
@@ -233,7 +224,7 @@ onMounted(async () => {
     dir.value = await defaultOutputDir()
   }
 })
-useWorkbenchPreview(spec)
+useWorkbenchPreview(executableSpec)
 </script>
 
 <template>

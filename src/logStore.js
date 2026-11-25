@@ -40,9 +40,10 @@ function isQrLine(text) {
   return text.length >= 8 && QR_CHARS.test(text)
 }
 
-let qrBuffer = []
+const qrBuffers = new Map()
 
 function commitQrIfAny(taskId) {
+  const qrBuffer=qrBuffers.get(taskId)||[]
   if (qrBuffer.length >= QR_MIN_LINES) {
     // 二维码会随 token 定期重画，后来的整块替换前一块。
     appState.loginQr = Object.freeze({
@@ -51,7 +52,7 @@ function commitQrIfAny(taskId) {
       at: Date.now()
     })
   }
-  qrBuffer = []
+  qrBuffers.delete(taskId)
 }
 
 function isErrorLevel(level) {
@@ -112,7 +113,8 @@ export function appendLog(data) {
     const line = collapseCarriage(part)
     // 二维码的块字符行不进日志：它们必须整块渲染，混在日志里会被换行和行高毁掉。
     if (isQrLine(line)) {
-      qrBuffer.push(line)
+      const lines=qrBuffers.get(taskId)||[]
+      lines.push(line);qrBuffers.set(taskId,lines.slice(-80))
       continue
     }
     commitQrIfAny(taskId)
@@ -120,8 +122,9 @@ export function appendLog(data) {
     pending.push(Object.freeze({ id: ++seq, taskId, level, text: line }))
   }
 
-  const live = collapseCarriage(tail)
-  carries.set(key, live)
+  const live = collapseCarriage(tail).slice(-32768)
+  if(carries.size>=400 && !carries.has(key)){const oldest=carries.keys().next().value;carries.delete(oldest);delete appState.liveLines[oldest]}
+  if(live)carries.set(key,live);else carries.delete(key)
   if (live) {
     appState.liveLines[key] = Object.freeze({ id: key, taskId, level, text: live })
   } else {
@@ -151,7 +154,7 @@ export function finalizeLogs(taskId) {
 export function clearLogs() {
   carries.clear()
   pending = []
-  qrBuffer = []
+  qrBuffers.clear()
   appState.loginQr = null
   appState.logs.splice(0)
   for (const key of Object.keys(appState.liveLines)) delete appState.liveLines[key]

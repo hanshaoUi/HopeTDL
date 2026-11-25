@@ -89,7 +89,7 @@ function syncAppStatus() {
 
 function keyboard(event) {
   if (event.defaultPrevented || event.isComposing) return
-  const editable = event.target?.closest?.('input,textarea,select,[contenteditable="true"],[role="textbox"],[role="combobox"]')
+  const editable = event.target?.isContentEditable || event.target?.closest?.('input,textarea,select,[contenteditable="true"],[role="textbox"],[role="combobox"]')
   if (editable) return
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'l') {
     event.preventDefault(); appState.showLog = !appState.showLog; return
@@ -115,7 +115,8 @@ onMounted(async () => {
     })
   }
   if (tdlApi) {
-    appState.config = await tdlApi.getConfig()
+    try { appState.config = await tdlApi.getConfig() }
+    catch(error) { appendLog({taskId:'app',level:'error',text:`[配置] 读取失败，保留界面默认值；请检查配置文件：${error}\n`}) }
   }
   // 恢复日志面板的显示状态
   try {

@@ -174,6 +174,13 @@ async fn request(
             Ok(v) => Ok(v["chats"].clone()),
             Err(err) => Ok(json!({"error":err})),
         },
+        "filter:readSample" => {
+            let path = PathBuf::from(text(&p));
+            if fs::metadata(&path).map_err(|e| e.to_string())?.len() > 256 * 1024 {
+                return Err("样本不能超过 256 KB".into());
+            }
+            read_json(&path)
+        }
         "filter:preview" => e.preview_filter(&p),
         "tdl:version" => e.version().await,
         "environment:check" => {
@@ -208,6 +215,13 @@ async fn request(
             Ok(json!({"ok":true,"filePath":target}))
         }
         "migration:import" => {
+            let active_guard = e.active.lock().unwrap();
+            if !active_guard.is_empty()
+                || e.has_processes()
+                || !e.schedule_running.lock().unwrap().is_empty()
+            {
+                return Err("请先停止全部任务再导入".into());
+            }
             if !e.store.snapshot()["tasks"]
                 .as_array()
                 .unwrap()
@@ -269,7 +283,7 @@ async fn request(
                 Ok(())
             })?;
             if data["config"].is_object() {
-                write_json(&e.store.root.join("config.json"), &data["config"])?;
+                e.set_config(&data["config"])?;
             }
             if data["chatCache"].is_object() {
                 write_json(&e.store.root.join("chats-cache.json"), &data["chatCache"])?;
@@ -308,6 +322,7 @@ fn quit(app: &tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         for _ in 0..50 {
             if !e.has_processes()
+                && !e.has_active_tasks()
                 && e.store.snapshot()["tasks"]
                     .as_array()
                     .unwrap()

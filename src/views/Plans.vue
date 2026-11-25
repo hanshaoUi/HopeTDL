@@ -24,6 +24,7 @@ function localTime() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 const runAt = ref(localTime());
+watch(showCreate,show=>{if(show && new Date(runAt.value).getTime()<=Date.now())runAt.value=localTime()});
 const groups = computed(() => [
   {title:'活跃计划', rows:appState.schedules.filter(s=>s.enabled && !appState.schedulerPaused)},
   {title:'暂停 / 停用', rows:appState.schedules.filter(s=>!s.enabled || appState.schedulerPaused)}
@@ -48,7 +49,7 @@ watch(
 watch(() => appState.planDraft, value => {
   if (!value) return;
   const spec = JSON.parse(JSON.stringify(value.spec));
-  draft.value = {id:'workbench-draft', title:value.title, type:spec.kind, spec, args:spec.kind==='comment-forward'?[]:toArgs(spec)};
+  draft.value = {id:'workbench-draft', title:value.title, type:spec.kind, spec, args:['comment-forward','workflow'].includes(spec.kind)?[]:toArgs(spec)};
   taskId.value = draft.value.id;
   triggerMode.value = 'time';
   showCreate.value = true;

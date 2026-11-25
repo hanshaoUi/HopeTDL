@@ -13,6 +13,9 @@ export const themeOverrides = computed(() => {
     textColor1:dark?'#eef1f8':'#2e3445',textColor2:dark?'#d7ddea':'#46516b',textColor3:dark?'#8a93a8':'#6c7a96',
     borderRadius:'6px',borderRadiusSmall:'6px',heightSmall:'32px',fontSizeSmall:'12px',
     fontFamily:'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif'
+  }, Alert: {
+    fontSize:'12px',lineHeight:'1.6',titleFontWeight:'400',
+    iconSize:'16px',padding:'10px 12px',iconMargin:'10px 8px 0 12px'
   }}
 })
 

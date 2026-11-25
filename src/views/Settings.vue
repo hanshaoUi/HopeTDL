@@ -113,7 +113,7 @@ async function importMigration() {
           </n-radio-group>
         </n-form-item>
         <n-form-item label="任务日志">
-          <n-switch v-model:value="appState.showLog" active-text="默认展开" inactive-text="收起" />
+          <n-switch v-model:value="appState.showLog" ><template #checked>默认展开</template><template #unchecked>收起</template></n-switch>
         </n-form-item>
       </div>
     </div>

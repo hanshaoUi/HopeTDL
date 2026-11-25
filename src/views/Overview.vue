@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import { progressPercent } from '../taskProgress'
 import { appState } from '../state'
-import { commandTextForSpec, runJob, retryTask } from '../utils'
+import { commandTextForSpec, runJob, retryTask, retryPending } from '../utils'
 import { message } from '../ui/naive'
 import { isTaskFailed, isTaskRunning, taskStatusType } from '../taskState'
 
@@ -16,8 +16,8 @@ const envResult = ref(null)
 const loginSpec = computed(() => ({ kind: 'login', type: loginType.value }))
 const latestTasks = computed(() => appState.tasks.slice(0, 6))
 const runningCount = computed(() => appState.tasks.filter(isTaskRunning).length)
-const slots = computed(() => Math.max(1,Number(appState.config.maxConcurrentTasks || 2)))
-const occupiedSlots = computed(() => appState.tasks.filter(isTaskRunning).length)
+const slots = computed(() => Math.max(1,Number(appState.runtimeSlots?.limit ?? appState.config.maxConcurrentTasks ?? 2)))
+const occupiedSlots = computed(() => (appState.runtimeSlots?.active ?? appState.tasks.filter(isTaskRunning).length))
 const enabledPlans = computed(() => appState.schedules.filter(s=>s.enabled).length)
 const failedCount = computed(() => appState.tasks.filter(isTaskFailed).length)
 
@@ -49,7 +49,8 @@ watch(lastLoginState, (state, previous) => {
 })
 
 async function retry(row) { try { await retryTask(row); message.success('已加入后台队列') } catch(e) { message.error(String(e)) } }
-function goto(view, kind) {
+function goto(view, kind, filter) {
+  if(filter)appState.tasksTab=filter
   if (kind) appState.newTaskKind = kind
   appState.activeView = view
 }
@@ -73,8 +74,8 @@ onMounted(checkEnvironment)
   />
 
   <div class="stat-row">
-    <button class="stat-card info" @click="goto('tasks')"><div class="stat-label">运行中</div><div class="stat-value">{{runningCount}}</div></button>
-    <button class="stat-card" :class="{warn:failedCount}" @click="goto('tasks')"><div class="stat-label">失败</div><div class="stat-value">{{failedCount}}</div></button>
+    <button class="stat-card info" @click="goto('tasks',null,'running')"><div class="stat-label">运行中</div><div class="stat-value">{{runningCount}}</div></button>
+    <button class="stat-card" :class="{warn:failedCount}" @click="goto('tasks',null,'failed')"><div class="stat-label">失败</div><div class="stat-value">{{failedCount}}</div></button>
     <button class="stat-card" @click="goto('plans')"><div class="stat-label">计划</div><div class="stat-value">{{enabledPlans}} / {{appState.schedules.length}}</div></button>
     <button class="stat-card" @click="goto('chats')"><div class="stat-label">对话缓存</div><div class="stat-value">{{appState.chatCacheMeta?.count||0}}</div></button>
   </div>
@@ -160,7 +161,7 @@ onMounted(checkEnvironment)
       <li v-for="row in latestTasks" :key="row.id" class="recent-item">
         <n-tag size="small" :type="taskStatusType(row)">{{ row.status }}</n-tag>
         <span class="recent-title">{{ row.title || row.type }}</span>
-        <span v-if="progressPercent(row)!==null" class="mini-muted">{{progressPercent(row)}}%</span><button v-if="isTaskFailed(row)" class="btn sm" @click="retry(row)">重试</button><span class="recent-time">{{ row.createdAt }}</span>
+        <span v-if="progressPercent(row)!==null" class="mini-muted">{{progressPercent(row)}}%</span><button v-if="isTaskFailed(row)" class="btn sm" :disabled="retryPending(row)" @click="retry(row)">重试</button><span class="recent-time">{{ row.createdAt }}</span>
       </li>
     </ul>
   </section>

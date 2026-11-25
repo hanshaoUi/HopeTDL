@@ -1,5 +1,6 @@
 <script setup>
 import AppIcon from '../../components/AppIcon.vue'
+import { invalidNumbers } from '../../../shared/specKey.mjs'
 import { progressPercent as completedPercent } from '../../taskProgress'
 import { useWorkbenchPreview } from '../../composables/useWorkbenchPreview'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
@@ -68,6 +69,9 @@ const stageText = computed(() => ({
   'export-list': '读取主消息列表',
   rehearsal: '演练检查完成（未逐条导出、未发送、未写断点）',
   skipped: '已跳过',
+  'filter-post': '过滤主消息',
+  'filter-comments': '过滤评论',
+  checkpoint: '保存断点',
   'export-post': '导出主消息',
   'forward-post': '转发主消息',
   'export-comments': '导出评论区',
@@ -224,11 +228,13 @@ async function loadProgressSummary(targetDir = currentWorkDir.value || workDir.v
 }
 
 async function startTask() {
-  if (!sourceChat.value) {
+  if(invalidNumbers(spec.value)){message.error('ID、话题和延迟必须是非负安全整数');return}
+  if(resume.value&&!workDir.value.trim()){message.error('续跑请选择原工作目录');return}
+  if (!sourceChat.value.trim()) {
     message.error('请填写源频道 / 群组')
     return
   }
-  if (!exportOnly.value && !dryRun.value && (forwardMain.value || forwardComments.value) && !targetChat.value) {
+  if (!exportOnly.value && !dryRun.value && (forwardMain.value || forwardComments.value) && !targetChat.value.trim()) {
     message.error('正式转发时必须填写目标频道 / 群组')
     return
   }
