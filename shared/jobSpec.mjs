@@ -115,9 +115,15 @@ function executionForSpec(spec) {
 
 function sourceChatForSpec(spec) {
   if (!spec || typeof spec !== 'object') return ''
+  if (spec.kind === 'workflow') return spec.steps?.map(sourceChatForSpec).find(Boolean) || ''
   if (spec.kind === 'export') return String(spec.chat || '')
   if (spec.kind === 'comment-forward') return String(spec.sourceChat || '')
   return ''
+}
+
+export function targetChatForSpec(spec) {
+  if (spec?.kind === 'workflow') return spec.steps?.map(targetChatForSpec).find(Boolean) || ''
+  return String(spec?.targetChat || spec?.target?.peer || (spec?.kind === 'upload' ? spec.chat : '') || '')
 }
 
 function outputPathForRange(outputPath, rangeText, timestamp) {

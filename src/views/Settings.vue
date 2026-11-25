@@ -167,11 +167,11 @@ async function importMigration() {
       <div class="section-title">性能设置</div>
       <div class="grid-2">
         <n-form-item v-if="desktopApi?.nativeRuntime" label="同时运行任务">
-          <n-input-number v-model:value="form.maxConcurrentTasks" :min="1" :max="8" />
-          <span class="mini-muted">重启应用后生效；其余任务排队等待。</span>
+          <n-input-number v-model:value="form.maxConcurrentTasks" :min="1" :max="8" placeholder="例如 2" />
+          <span class="mini-muted">保存后即时生效；其余任务排队等待。</span>
         </n-form-item>
-        <n-form-item label="并发数"><n-input-number v-model:value="form.limit" :min="1" :max="20" /></n-form-item>
-        <n-form-item label="线程数"><n-input-number v-model:value="form.threads" :min="1" :max="32" /></n-form-item>
+        <n-form-item label="并发数"><n-input-number v-model:value="form.limit" :min="1" :max="20" placeholder="例如 5" /></n-form-item>
+        <n-form-item label="线程数"><n-input-number v-model:value="form.threads" :min="1" :max="32" placeholder="例如 4" /></n-form-item>
         <n-form-item label="延迟"><n-input v-model:value="form.delay" placeholder="例如 2s，可为空" /></n-form-item>
       </div>
     </div>

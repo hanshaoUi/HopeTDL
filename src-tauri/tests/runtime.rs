@@ -22,6 +22,15 @@ fn filtering_preserves_metadata_and_applies_types_lines_and_local_rules() {
     assert_eq!(local["count"], 0);
 }
 #[test]
+fn global_regex_and_local_literal_flags_are_independent() {
+    let input = json!({"messages":[{"id":1,"text":"AD123"},{"id":2,"text":"literal.*"},{"id":3,"text":"literalZZ"},{"id":4,"text":"ad123"}]});
+    let result = Filter::new(&json!({"forwardFilterEnabled":true,"filterKeywordsText":"AD[0-9]+","keywordRegexMode":true,"keywordCaseSensitive":true,"blockKeywordsText":"literal.*","blockKeywordRegexMode":false,"blockKeywordCaseSensitive":false})).unwrap().apply(input);
+    assert_eq!(result["count"], 2);
+    assert_eq!(message_ids(&result["json"]), vec![3, 4]);
+    let duplicate = Filter::new(&json!({"filterKeywordsText":"a","blockKeywordsText":"a","filterKeywordAction":"replace","filterKeywordReplacement":"aa"})).unwrap().apply(json!({"messages":[{"id":1,"text":"a"}]}));
+    assert_eq!(duplicate["json"]["messages"][0]["text"], "aa");
+}
+#[test]
 fn regex_replacement_and_nested_ids_match_existing_semantics() {
     let result=Filter::new(&json!({"filterKeywordsText":"(?<=编号)([0-9]+)","keywordRegexMode":true,"filterKeywordAction":"replace","filterKeywordReplacement":"[$1:$&:$$]"})).unwrap().apply(json!({"messages":[{"id":"12","text":"编号123"}]}));
     assert_eq!(result["json"]["messages"][0]["text"], "编号[123:123:$]");
@@ -602,6 +611,39 @@ print('任务完成')
                 .lines()
                 .count(),
             before
+        );
+    }
+    #[tokio::test]
+    async fn shutdown_rejects_schedule_registration_before_any_io() {
+        let (_, e, _) = fixture();
+        e.shutting_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let before = e.store.snapshot();
+        assert!(scheduler::execute(e.clone(), "missing", true)
+            .await
+            .unwrap_err()
+            .contains("退出"));
+        assert!(e.schedule_running.lock().unwrap().is_empty());
+        assert_eq!(e.store.snapshot(), before);
+    }
+    #[tokio::test]
+    async fn comment_matching_keeps_global_flags_when_local_rules_exist() {
+        let (_dir, e, _) = fixture();
+        let mut config = e.config().unwrap();
+        config["forwardFilterEnabled"] = json!(true);
+        config["filterKeywordsText"] = json!("AD[0-9]+");
+        config["keywordRegexMode"] = json!(true);
+        config["keywordCaseSensitive"] = json!(true);
+        e.set_config(&config).unwrap();
+        let effective=e.filter_config(&json!({"kind":"comment-forward","blockKeywordsText":"literal.*","keywordRegexMode":false,"keywordCaseSensitive":false})).unwrap();
+        assert_eq!(effective["keywordRegexMode"], true);
+        assert_eq!(effective["blockKeywordRegexMode"], false);
+        assert_eq!(
+            Filter::new(&effective)
+                .unwrap()
+                .apply(json!({"messages":[{"id":1,"text":"AD123"},{"id":2,"text":"literal.*"}]}))
+                ["count"],
+            0
         );
     }
     #[tokio::test]

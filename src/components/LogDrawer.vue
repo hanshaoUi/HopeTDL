@@ -87,7 +87,7 @@ function logText(log) {
 }
 
 async function clearLogs() {
-  if (!appState.logs.length) return
+  if (!appState.logs.length && !Object.keys(appState.liveLines).length && !appState.loginQr) return
   try {
     await confirmHtml('<p>清空后当前日志面板内容会被移除，但不会影响已经运行的任务记录。</p>', '清空任务日志', {
       confirmButtonText: '清空',

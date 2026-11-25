@@ -102,7 +102,7 @@ useSelectedChat(row => {
   selectedTargetChat.value = row
   touchRecentChat(row)
   chat.value = String(row.id || row.dialog_id || row.dialogID || row.username || '')
-})
+}, 'upload')
 
 function run() {
   if (!path.value || !chat.value) {

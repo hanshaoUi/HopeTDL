@@ -1,5 +1,6 @@
 <script setup>
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
+import { dateZhCN, zhCN } from 'naive-ui'
 import { appState } from './state'
 import { naiveTheme, themeOverrides } from './ui/naive'
 import { appendLog, finalizeLogs } from './logStore'
@@ -89,15 +90,20 @@ function syncAppStatus() {
 
 function keyboard(event) {
   if (event.defaultPrevented || event.isComposing) return
-  const editable = event.target?.isContentEditable || event.target?.closest?.('input,textarea,select,[contenteditable="true"],[role="textbox"],[role="combobox"]')
+  const editable = event.target?.isContentEditable || event.target?.closest?.('input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[role="combobox"]')
   if (editable) return
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'l') {
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'l') {
     event.preventDefault(); appState.showLog = !appState.showLog; return
   }
   if (event.ctrlKey || event.metaKey || event.altKey || document.querySelector('[aria-modal="true"]')) return
   const view = ({'1':'overview','2':'chats','3':'newTask','4':'tasks','5':'plans','6':'settings',w:'newTask'})[event.key.toLowerCase()]
   if (view) { event.preventDefault(); appState.activeView = view }
-  if (event.key === 'Escape') { appState.showLog = false; navExpanded.value = false; document.querySelectorAll('details[open]').forEach(d=>d.open=false) }
+  if (event.key === 'Escape') {
+    if (document.querySelector('.history-popover')) return
+    if (appState.showLog) { appState.showLog = false; return }
+    if (navExpanded.value) { navExpanded.value = false; return }
+    document.querySelectorAll('details[open]').forEach(d => { d.open = false })
+  }
 }
 onMounted(async () => {
   window.addEventListener('keydown', keyboard)
@@ -126,7 +132,7 @@ onMounted(async () => {
     // 忽略 localStorage 读取错误
   }
   if (!tdlApi) {
-    appendLog({ taskId: 'app', level: 'warning', text: '[开发预览] 当前页面未运行在 Electron 中，tdl 操作不可用。\n' })
+    appendLog({ taskId: 'app', level: 'warning', text: '[开发预览] 当前页面未运行在 Rust 桌面端中，tdl 操作不可用。\n' })
     return
   }
 
@@ -216,19 +222,20 @@ watch(
 </script>
 
 <template>
-  <n-config-provider :theme="naiveTheme" :theme-overrides="themeOverrides">
+  <n-config-provider :theme="naiveTheme" :theme-overrides="themeOverrides" :locale="zhCN" :date-locale="dateZhCN">
     <n-message-provider><n-dialog-provider>
       <div class="shell v2-app">
+        <div v-if="navExpanded" class="nav-backdrop" aria-hidden="true" @click="navExpanded = false" />
         <nav class="nav-rail" :class="{ ex: navExpanded }" aria-label="主导航">
           <div class="nav-brand"><span class="nav-mark">T</span><span class="nav-word">HopeTDL</span></div>
           <div class="nav-items">
-            <button v-for="item in nav" :key="item[0]" type="button" class="nav-item" :class="{ active: appState.activeView === item[0] }" :title="item[1]" :aria-label="item[1]" :data-tip="item[1]" @click="appState.activeView = item[0]">
+            <button v-for="item in nav" :key="item[0]" type="button" class="nav-item" :class="{ active: appState.activeView === item[0] }" :aria-current="appState.activeView === item[0] ? 'page' : undefined" :title="item[1]" :aria-label="item[1]" :data-tip="item[1]" @click="appState.activeView = item[0]">
               <AppIcon :name="item[2]" class="icon" :size="18" /><span class="nav-label">{{ item[1] }}</span>
               <span v-if="item[0] === 'tasks' && runningTaskCount" class="nav-badge">{{ runningTaskCount }}</span>
               <span v-if="item[0] === 'plans' && enabledPlans" class="nav-badge plans-badge">{{ enabledPlans }}</span>
             </button>
           </div>
-          <div class="nav-bottom"><button class="nav-toggle" :aria-label="navExpanded ? '收起导航' : '展开导航'" :aria-expanded="navExpanded" @click="navExpanded = !navExpanded"><AppIcon name="chevron" :size="14" :style="{transform: navExpanded ? 'rotate(180deg)' : ''}" /></button></div>
+          <div class="nav-bottom"><button type="button" class="nav-toggle" :aria-label="navExpanded ? '收起导航' : '展开导航'" :aria-expanded="navExpanded" @click="navExpanded = !navExpanded"><AppIcon name="chevron" :size="14" :style="{transform: navExpanded ? 'rotate(180deg)' : ''}" /></button></div>
         </nav>
         <main class="main-area">
           <section class="page-content content">

@@ -377,6 +377,8 @@ pub async fn run(
         "blockKeywordsText",
         "keywordRegexMode",
         "keywordCaseSensitive",
+        "blockKeywordRegexMode",
+        "blockKeywordCaseSensitive",
     ] {
         context[key] = c[key].clone();
     }

@@ -59,12 +59,13 @@ pub struct Engine {
     pub output: PathBuf,
     sink: Sink,
     log_lock: Mutex<()>,
+    config_lock: Mutex<()>,
     pub(crate) active: Mutex<HashMap<String, CancellationToken>>,
     commands: Mutex<HashMap<u32, CancellationToken>>,
     slots: Arc<Slots>,
     pub shutting_down: AtomicBool,
     pub schedule_running: Mutex<std::collections::HashSet<String>>,
-    cache_lock: tokio::sync::Mutex<()>,
+    pub(crate) cache_lock: tokio::sync::Mutex<()>,
     comment_active: AtomicBool,
 }
 impl Engine {
@@ -77,6 +78,7 @@ impl Engine {
             output,
             sink,
             log_lock: Mutex::new(()),
+            config_lock: Mutex::new(()),
             active: Mutex::new(HashMap::new()),
             commands: Mutex::new(HashMap::new()),
             slots: Arc::new(Slots {
@@ -104,20 +106,23 @@ impl Engine {
         snapshot
     }
     pub fn set_config(&self, config: &Value) -> Result<Value> {
+        let guard = self.config_lock.lock().unwrap();
         if !config.is_object() {
             return Err("配置必须是对象".into());
         }
         write_json(&self.store.root.join("config.json"), config)?;
-        let config = self.config()?;
+        let config = self.store.config(&self.output)?;
         self.slots.state.lock().unwrap().0 = config["maxConcurrentTasks"]
             .as_u64()
             .unwrap_or(2)
             .clamp(1, 8) as usize;
         self.slots.changed.notify_waiters();
+        drop(guard);
         self.changed();
         Ok(config)
     }
     pub fn config(&self) -> Result<Value> {
+        let _guard = self.config_lock.lock().unwrap();
         self.store.config(&self.output)
     }
     pub fn filter_config(&self, spec: &Value) -> Result<Value> {
@@ -127,6 +132,8 @@ impl Engine {
                 "blockKeywordsText",
                 "keywordCaseSensitive",
                 "keywordRegexMode",
+                "blockKeywordRegexMode",
+                "blockKeywordCaseSensitive",
                 "forwardFilterEnabled",
                 "filterKeywordsText",
                 "filterKeywordAction",
@@ -144,9 +151,11 @@ impl Engine {
         if spec["kind"] == "comment-forward" {
             if let Some(options) = spec.as_object() {
                 for (key, value) in options {
-                    if !["keywordCaseSensitive", "keywordRegexMode"].contains(&key.as_str())
-                        || !text(&spec["blockKeywordsText"]).trim().is_empty()
-                    {
+                    if key == "keywordCaseSensitive" {
+                        effective["blockKeywordCaseSensitive"] = value.clone();
+                    } else if key == "keywordRegexMode" {
+                        effective["blockKeywordRegexMode"] = value.clone();
+                    } else {
                         effective[key] = value.clone();
                     }
                 }
@@ -488,8 +497,14 @@ impl Engine {
         token: &CancellationToken,
     ) -> Result<Value> {
         let mut args = args.to_vec();
+        self.store
+            .task(id, json!({"progress":{"stage":"prepare"}}))?;
+        self.changed();
         let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
         if args.first().map(String::as_str) == Some("forward") {
+            self.store
+                .task(id, json!({"progress":{"stage":"filter"}}))?;
+            self.changed();
             let from = jobs::arg(&args, &["--from"]);
             if from.is_empty() {
                 return Err("转发任务缺少源文件".into());
@@ -530,6 +545,9 @@ impl Engine {
                 }
             }
         }
+        self.store
+            .task(id, json!({"progress":{"stage":"execute"}}))?;
+        self.changed();
         let result = self.command(id, &args, c, None, token, false).await?;
         Ok(
             json!({"code":result.code,"errorTail":if result.code==0 {String::new()}else{result.error()}}),

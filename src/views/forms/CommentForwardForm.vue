@@ -1,9 +1,10 @@
 <script setup>
+import { safeDecimal } from '../../../shared/validateJob.mjs'
 import AppIcon from '../../components/AppIcon.vue'
 import { invalidNumbers } from '../../../shared/specKey.mjs'
 import { progressPercent as completedPercent } from '../../taskProgress'
 import { useWorkbenchPreview } from '../../composables/useWorkbenchPreview'
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import { message, confirmHtml } from '../../ui/naive'
 import ChatSelect from '../../components/ChatSelect.vue'
 import CommandPreview from '../../components/CommandPreview.vue'
@@ -93,7 +94,13 @@ const previewCommand = computed(() => {
   return (dryRun.value ? [lines[0], lines[1], '# 演练：跳过逐条导出、过滤、转发；不写已完成断点'] : lines).join('\n')
 })
 
-function closeAdvanced(event) { if(event.key==='Escape')advancedMode.value=false }
+function closeAdvanced(event) {
+  if (appState.activeView !== 'newTask' || appState.newTaskKind !== 'commentForward' || document.querySelector('[aria-modal="true"]')) return
+  if (event.key === 'Escape' && advancedMode.value) {
+    advancedMode.value = false
+    event.stopPropagation()
+  }
+}
 function getChatLabel(row, fallback) {
   const title = chatTitle(row)
   const id = chatId(row) || fallback
@@ -179,11 +186,11 @@ const spec = computed(() => ({
     kind: 'comment-forward',
     sourceChat: sourceChat.value,
     targetChat: targetChat.value,
-    targetTopicId: targetTopicId.value ? Number(targetTopicId.value) : null,
-    startId: startId.value ? Number(startId.value) : null,
-    endId: endId.value ? Number(endId.value) : null,
+    targetTopicId: safeDecimal(targetTopicId.value),
+    startId: safeDecimal(startId.value),
+    endId: safeDecimal(endId.value),
     mode: mode.value,
-    delayMs: Number(delayMs.value || 0),
+    delayMs: safeDecimal(delayMs.value, 0),
     workDir: workDir.value,
     includeComments: includeComments.value,
     forwardMain: forwardMain.value,
@@ -307,7 +314,7 @@ useSelectedChat(row => {
   selectedSourceChat.value = row
   sourceChat.value = String(row.id || row.dialog_id || row.dialogID || row.username || '')
   touchRecentChat(row)
-})
+}, 'commentForward')
 
 onMounted(() => {
   window.addEventListener('keydown',closeAdvanced)
@@ -336,6 +343,8 @@ onUnmounted(() => {
   if (offProgress) offProgress()
   if (offStatus) offStatus()
 })
+onDeactivated(() => window.removeEventListener('keydown', closeAdvanced))
+onActivated(() => window.addEventListener('keydown', closeAdvanced))
 const workbench = useWorkbenchPreview(spec, { taskId: currentTaskId, status, progress })
 </script>
 

@@ -1,10 +1,12 @@
 import { computed, h } from 'vue'
-import { createDiscreteApi, darkTheme } from 'naive-ui'
+import { createDiscreteApi, darkTheme, dateZhCN, zhCN } from 'naive-ui'
 import { resolvedTheme } from '../theme'
 
 export const themeOverrides = computed(() => {
   const dark = resolvedTheme.value === 'dark'
   const blue = dark ? '#5b9ef8' : '#3d8ef0'
+  const msgBg = dark ? '#1d2230' : '#ffffff'
+  const msgText = dark ? '#eef1f8' : '#2e3445'
   return {common: {
     primaryColor:blue,primaryColorHover:dark?'#7ab1fb':'#62a5f5',primaryColorPressed:dark?'#4287df':'#2878d5',
     bodyColor:dark?'#0d0f14':'#f3f5f9',baseColor:dark?'#141720':'#ffffff',
@@ -16,6 +18,9 @@ export const themeOverrides = computed(() => {
   }, Alert: {
     fontSize:'12px',lineHeight:'1.6',titleFontWeight:'400',
     iconSize:'16px',padding:'10px 12px',iconMargin:'10px 8px 0 12px'
+  }, Message: {
+    color:msgBg,colorInfo:msgBg,colorSuccess:msgBg,colorWarning:msgBg,colorError:msgBg,colorLoading:msgBg,
+    textColor:msgText,textColorInfo:msgText,textColorSuccess:msgText,textColorWarning:msgText,textColorError:msgText,textColorLoading:msgText
   }}
 })
 
@@ -23,7 +28,9 @@ export const naiveTheme = computed(() => resolvedTheme.value === 'dark' ? darkTh
 
 const configProviderProps = computed(() => ({
   theme: naiveTheme.value,
-  themeOverrides: themeOverrides.value
+  themeOverrides: themeOverrides.value,
+  locale: zhCN,
+  dateLocale: dateZhCN
 }))
 
 export const { message, dialog } = createDiscreteApi(['message', 'dialog'], {

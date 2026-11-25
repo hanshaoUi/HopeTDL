@@ -61,6 +61,17 @@ async fn request(
                     "delete" => a.retain(|s| s["id"] != id),
                     "upsert" => {
                         let patch = p["schedule"].as_object().ok_or("缺少计划内容")?;
+                        if p["schedule"]["triggerMode"] == "chat-update"
+                            && (text(&p["schedule"]["watchChat"]).trim().is_empty()
+                                || !["export", "forward"].contains(
+                                    &p["schedule"]["spec"]["kind"]
+                                        .as_str()
+                                        .or(p["schedule"]["type"].as_str())
+                                        .unwrap_or(""),
+                                ))
+                        {
+                            return Err("增量计划需要导出/转发模板和检测来源对话".into());
+                        }
                         if patch.get("id") != Some(&json!(id)) {
                             return Err("计划 ID 不一致".into());
                         }
@@ -94,8 +105,8 @@ async fn request(
                 }
                 Ok(())
             });
-            e.changed();
             result?;
+            e.changed();
             Ok(e.store.snapshot())
         }
         "runtime:runSchedule" => scheduler::execute(e, &text(&p), true).await,
@@ -215,6 +226,7 @@ async fn request(
             Ok(json!({"ok":true,"filePath":target}))
         }
         "migration:import" => {
+            let _cache_guard = e.cache_lock.lock().await;
             let active_guard = e.active.lock().unwrap();
             if !active_guard.is_empty()
                 || e.has_processes()
@@ -323,6 +335,7 @@ fn quit(app: &tauri::AppHandle) {
         for _ in 0..50 {
             if !e.has_processes()
                 && !e.has_active_tasks()
+                && e.schedule_running.lock().unwrap().is_empty()
                 && e.store.snapshot()["tasks"]
                     .as_array()
                     .unwrap()
@@ -421,14 +434,15 @@ pub fn run() {
                             let _ = app.emit("app-navigate", "tasks");
                         }
                         "pause" => {
-                            let paused = e.store.snapshot()["schedulerPaused"] != true;
-                            if let Err(err) = e.store.update(|d| {
-                                d["schedulerPaused"] = json!(paused);
+                            let result = e.store.update(|d| {
+                                d["schedulerPaused"] = json!(d["schedulerPaused"] != true);
                                 Ok(())
-                            }) {
+                            });
+                            if let Err(err) = result {
                                 e.emit("runtime:error", json!(err));
+                            } else {
+                                e.changed();
                             }
-                            e.changed();
                         }
                         "stop" => {
                             e.stop_all();

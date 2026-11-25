@@ -6,6 +6,7 @@ import { message } from '../ui/naive'
 import AppIcon from '../components/AppIcon.vue'
 import { isTaskFailed } from '../taskState'
 import { taskProgress, progressPercent, stagesForTask } from '../taskProgress'
+import { sourceChatForSpec, targetChatForSpec } from '../../shared/jobSpec.mjs'
 const History = defineAsyncComponent(()=>import('./panels/HistoryPanel.vue'))
 const Advanced = defineAsyncComponent(()=>import('./panels/TaskListPanel.vue'))
 const tab=ref('all'),selectedId=ref(''),logs=ref(''),progress=ref({}),showAdvanced=ref(false)
@@ -28,7 +29,7 @@ watch(selectedId,async id=>{
 },{immediate:true})
 watch(()=>appState.focusedTaskId,id=>{if(id){selectedId.value=id;tab.value='all';appState.focusedTaskId=''}},{immediate:true})
 
-function route(t){const s=t.spec||{};return s.sourceChat?`${s.sourceChat} → ${s.targetChat||'本地导出'}`:s.chat?`${s.chat} → ${s.output||s.path||'本地'}`:s.from?`${s.from} → ${s.target?.peer||''}`:t.summary||'—'}
+function route(t){const s=t.spec||{};const from=sourceChatForSpec(s)||s.from||s.path;const last=s.kind==='workflow'?s.steps?.at(-1):s;const to=targetChatForSpec(s)||last?.directory||last?.output||'本地';return from?`${from} → ${to}`:t.summary||'—'}
 function output(t){return t.workDir||t.spec?.workDir||t.spec?.output||t.spec?.directory||t.outputPath}
 function percent(t){return progressPercent(t, progress.value[t.id])}
 function command(t){try{return t.command||(t.spec?commandTextForSpec(t.spec):commandText(t.args||[]))}catch{return '评论区顺序转发流程'}}

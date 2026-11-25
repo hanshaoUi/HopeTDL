@@ -88,6 +88,9 @@ impl Drop for Running {
 pub async fn execute(e: Arc<Engine>, id: &str, manual: bool) -> Result<Value> {
     {
         let _maintenance = e.active.lock().unwrap();
+        if e.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("应用正在退出".into());
+        }
         let mut running = e.schedule_running.lock().unwrap();
         if !running.insert(id.into()) {
             return Err("该计划正在执行".into());

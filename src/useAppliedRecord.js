@@ -33,11 +33,11 @@ export function useAppliedRecord(field, apply) {
  *
  * @param {(row: object) => void} apply
  */
-export function useSelectedChat(apply) {
+export function useSelectedChat(apply, kind) {
   watch(
-    () => appState.selectedChat,
-    row => {
-      if (!row) return
+    [() => appState.selectedChat, () => appState.newTaskKind, () => appState.activeView],
+    ([row]) => {
+      if (!row || (kind && (appState.newTaskKind !== kind || appState.activeView !== 'newTask'))) return
       appState.selectedChat = null
       apply(row)
     },

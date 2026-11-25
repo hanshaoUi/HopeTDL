@@ -8,7 +8,8 @@ import ChatSelect from '../../components/ChatSelect.vue'
 import { appState } from '../../state.js'
 import { chatId as getChatId, chatTitle as getChatTitle, findChatByValue } from '../../chatCache'
 import { dedupeExportRecords, mergeExportRecord, readJson, saveForwardRecord, touchRecentChat, writeJson } from '../../historyStore'
-import { useAppliedRecord } from '../../useAppliedRecord'
+import { useAppliedRecord, useSelectedChat } from '../../useAppliedRecord'
+import { validateJob } from '../../../shared/validateJob.mjs'
 import { resolveRangeStart } from '../../exportRange'
 
 const chat = ref('')
@@ -383,18 +384,22 @@ useAppliedRecord('selectedExportRecord', record => {
   autoOutput.value = !record.output
 })
 
+useSelectedChat(row => {
+  externalApplied = true
+  loadMemory()
+  chat.value = String(getChatId(row) || '')
+  selectedSourceChat.value = row
+  touchRecentChat(row)
+  input.value = ''
+  const remembered = getChatMemory(chat.value)
+  if (remembered) applyRecord(remembered, 'chat-id')
+  autoOutput.value = true
+}, 'export')
+
 onMounted(async () => {
   loadMemory()
 
-  if (!externalApplied && appState && appState.selectedChat) {
-    const row = appState.selectedChat
-    const id = row.id || row.dialog_id || row.dialogID || ''
-    chat.value = String(id)
-    selectedSourceChat.value = row
-    touchRecentChat(row)
-    const remembered = getChatMemory(String(id))
-    if (remembered) applyRecord(remembered, 'chat-id')
-  } else if (!externalApplied && exportMemory.value.last) {
+  if (!externalApplied && exportMemory.value.last) {
     // 没有从列表传入聊天时，默认恢复上一次的 -c 和 -i，但输出文件重新生成，避免覆盖旧文件。
     applyRecord(exportMemory.value.last, 'all')
   }
@@ -430,7 +435,7 @@ watch([chat, type, input], () => updateSmartOutput())
 const spec = computed(() => ({
   kind: 'export',
   chat: chat.value,
-  selector: input.value.trim() ? { type: type.value, input: input.value.trim() } : null,
+  selector: input.value.trim() || !['id','all'].includes(type.value) ? { type: type.value, input: input.value.trim() } : null,
   all: all.value,
   withContent: withContent.value,
   raw: raw.value,
@@ -471,6 +476,7 @@ async function run() {
     }
   }
 
+  try { validateJob(previewSpec.value) } catch(error) { message.error(error.message); return }
   if (canAutoAnalyzeNextInput()) {
     message.info('本次未填写 -i，将按 tdl 默认范围导出；完成后会从输出 JSON 自动识别最大消息 ID，并生成下次的 -i。')
   }

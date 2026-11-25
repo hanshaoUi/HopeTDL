@@ -251,33 +251,43 @@ pub struct Filter {
 impl Filter {
     pub fn new(c: &Value) -> Result<Self> {
         let global = c["forwardFilterEnabled"] != false;
-        let mut raw = if global {
+        let global_raw = if global {
             keywords(&c["filterKeywordsText"])
         } else {
             vec![]
         };
-        raw.extend(keywords(if c["blockKeywordsText"].is_null() {
+        let local_raw = keywords(if c["blockKeywordsText"].is_null() {
             &c["blockKeywords"]
         } else {
             &c["blockKeywordsText"]
-        }));
-        let mut seen = BTreeSet::new();
-        raw.retain(|s| seen.insert(s.clone()));
-        let flags = if c["keywordCaseSensitive"] == true {
-            "m"
-        } else {
-            "im"
-        };
+        });
         let mut rules = vec![];
-        for s in raw {
-            let source = if c["keywordRegexMode"] == true {
-                s.clone()
-            } else {
-                regex::escape(&s)
-            };
-            let re = Regex::with_flags(&source, flags)
-                .map_err(|e| format!("无效关键词正则 {s}: {e}"))?;
-            rules.push((s, re));
+        let mut seen = BTreeSet::new();
+        for (raw, case, regex) in [
+            (
+                global_raw,
+                c["keywordCaseSensitive"] == true,
+                c["keywordRegexMode"] == true,
+            ),
+            (
+                local_raw,
+                c["blockKeywordCaseSensitive"]
+                    .as_bool()
+                    .unwrap_or(c["keywordCaseSensitive"] == true),
+                c["blockKeywordRegexMode"]
+                    .as_bool()
+                    .unwrap_or(c["keywordRegexMode"] == true),
+            ),
+        ] {
+            for s in raw {
+                let source = if regex { s.clone() } else { regex::escape(&s) };
+                if !seen.insert((source.clone(), case)) {
+                    continue;
+                }
+                let re = Regex::with_flags(&source, if case { "m" } else { "im" })
+                    .map_err(|e| format!("无效关键词正则 {s}: {e}"))?;
+                rules.push((s, re));
+            }
         }
         let enabled = !rules.is_empty()
             || global

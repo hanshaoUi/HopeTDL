@@ -180,6 +180,10 @@ function selectForForward(row) { startTask(row, 'forward') }
 function selectForUpload(row) { startTask(row, 'upload') }
 function selectForCommentForward(row) { startTask(row, 'commentForward') }
 function selectForDownload(row) { startTask(row, 'download') }
+function isFav(row) {
+  appState.chatPrefsVersion
+  return isFavoriteChat(chatId(row) || chatUsername(row))
+}
 function toggleFav(row) {
   const next = toggleFavoriteChat(row)
   message.success(next ? '已收藏' : '已取消收藏')
@@ -332,10 +336,10 @@ onMounted(() => {
       <button
         type="button"
         class="chat-fav"
-        :class="{ off: !isFavoriteChat(chatId(row)) }"
-        :title="isFavoriteChat(chatId(row)) ? '取消收藏' : '收藏'"
+        :class="{ off: !isFav(row) }"
+        :title="isFav(row) ? '取消收藏' : '收藏'"
         @click="toggleFav(row)"
-      ><AppIcon name="star" :size="14" /></button>
+      ><AppIcon name="star" :size="14" :filled="isFav(row)" /></button>
 
       <div class="chat-main">
         <div class="chat-line">
