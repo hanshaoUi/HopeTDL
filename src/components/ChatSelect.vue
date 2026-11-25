@@ -39,6 +39,7 @@ const value = computed({
 // 这样排序和 option 构建不会在每次无关的响应式更新时重复跑一遍。
 const chats = computed(() => {
   appState.chatCacheVersion;
+  appState.chatPrefsVersion;
   return sortChatsForUse(appState.cachedChats || []);
 });
 const chatOptions = computed(() =>
@@ -50,6 +51,7 @@ const chatOptions = computed(() =>
 );
 const recentKeys = computed(() => {
   appState.chatCacheVersion;
+  appState.chatPrefsVersion;
   return new Set(getRecentChats().map((item) => item.key));
 });
 const loading = computed(() => appState.chatCacheLoading);

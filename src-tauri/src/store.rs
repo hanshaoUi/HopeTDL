@@ -91,6 +91,24 @@ impl Store {
             Ok(())
         })
     }
+    // Preserve the known terminal outcome in memory if the disk becomes
+    // unavailable. Pause automatic plans so stale cursors cannot replay sends.
+    pub fn volatile_terminal(&self, id: &str, patch: &Value, error: &str) {
+        let mut data = self.data.lock().unwrap();
+        if let Some(task) = data["tasks"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|t| t["id"] == id)
+        {
+            for (key, value) in patch.as_object().unwrap() {
+                task[key] = value.clone();
+            }
+            task["persistenceError"] = json!(error);
+        }
+        data["schedulerPaused"] = json!(true);
+        data["revision"] = json!(data["revision"].as_u64().unwrap_or(0) + 1);
+    }
     pub fn config(&self, output: &Path) -> Result<Value> {
         let mut c = json!({"ns":"hope","proxy":"","delay":"","limit":1,"threads":4,"maxConcurrentTasks":2,"chatCacheDays":7,
             "defaultDownloadDir":output,"tdlPath":"tdl","forwardFilterEnabled":false,"filterKeywordsText":"",

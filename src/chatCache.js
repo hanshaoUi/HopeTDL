@@ -18,13 +18,18 @@ export async function loadChatCache({ ensure = false, refresh = false } = {}) {
   appState.chatCacheLoading = true
   const request = (async () => {
     try {
+      const api = window.tdlApi
+      if (!api) {
+        if (refresh) throw new Error('当前处于浏览器预览模式，无法刷新对话列表')
+        return applyCacheInfo({ chats: [] })
+      }
       let info
       if (refresh) {
-        info = await window.tdlApi.refreshChatCache()
+        info = await api.refreshChatCache()
       } else if (ensure) {
-        info = await window.tdlApi.ensureChatCache()
+        info = await api.ensureChatCache()
       } else {
-        info = await window.tdlApi.getChatCache()
+        info = await api.getChatCache()
       }
       return applyCacheInfo(info)
     } finally {

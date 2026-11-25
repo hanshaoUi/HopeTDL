@@ -61,6 +61,17 @@ async fn request(
                     "delete" => a.retain(|s| s["id"] != id),
                     "upsert" => {
                         let patch = p["schedule"].as_object().ok_or("缺少计划内容")?;
+                        if p["schedule"]["triggerMode"] == "chat-update"
+                            && (text(&p["schedule"]["watchChat"]).trim().is_empty()
+                                || !["export", "forward"].contains(
+                                    &p["schedule"]["spec"]["kind"]
+                                        .as_str()
+                                        .or(p["schedule"]["type"].as_str())
+                                        .unwrap_or(""),
+                                ))
+                        {
+                            return Err("增量计划需要导出/转发模板和检测来源对话".into());
+                        }
                         if patch.get("id") != Some(&json!(id)) {
                             return Err("计划 ID 不一致".into());
                         }
@@ -94,8 +105,8 @@ async fn request(
                 }
                 Ok(())
             });
-            e.changed();
             result?;
+            e.changed();
             Ok(e.store.snapshot())
         }
         "runtime:runSchedule" => scheduler::execute(e, &text(&p), true).await,
@@ -174,6 +185,13 @@ async fn request(
             Ok(v) => Ok(v["chats"].clone()),
             Err(err) => Ok(json!({"error":err})),
         },
+        "filter:readSample" => {
+            let path = PathBuf::from(text(&p));
+            if fs::metadata(&path).map_err(|e| e.to_string())?.len() > 256 * 1024 {
+                return Err("样本不能超过 256 KB".into());
+            }
+            read_json(&path)
+        }
         "filter:preview" => e.preview_filter(&p),
         "tdl:version" => e.version().await,
         "environment:check" => {
@@ -208,6 +226,14 @@ async fn request(
             Ok(json!({"ok":true,"filePath":target}))
         }
         "migration:import" => {
+            let _cache_guard = e.cache_lock.lock().await;
+            let active_guard = e.active.lock().unwrap();
+            if !active_guard.is_empty()
+                || e.has_processes()
+                || !e.schedule_running.lock().unwrap().is_empty()
+            {
+                return Err("请先停止全部任务再导入".into());
+            }
             if !e.store.snapshot()["tasks"]
                 .as_array()
                 .unwrap()
@@ -269,7 +295,7 @@ async fn request(
                 Ok(())
             })?;
             if data["config"].is_object() {
-                write_json(&e.store.root.join("config.json"), &data["config"])?;
+                e.set_config(&data["config"])?;
             }
             if data["chatCache"].is_object() {
                 write_json(&e.store.root.join("chats-cache.json"), &data["chatCache"])?;
@@ -308,6 +334,8 @@ fn quit(app: &tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         for _ in 0..50 {
             if !e.has_processes()
+                && !e.has_active_tasks()
+                && e.schedule_running.lock().unwrap().is_empty()
                 && e.store.snapshot()["tasks"]
                     .as_array()
                     .unwrap()
@@ -406,14 +434,15 @@ pub fn run() {
                             let _ = app.emit("app-navigate", "tasks");
                         }
                         "pause" => {
-                            let paused = e.store.snapshot()["schedulerPaused"] != true;
-                            if let Err(err) = e.store.update(|d| {
-                                d["schedulerPaused"] = json!(paused);
+                            let result = e.store.update(|d| {
+                                d["schedulerPaused"] = json!(d["schedulerPaused"] != true);
                                 Ok(())
-                            }) {
+                            });
+                            if let Err(err) = result {
                                 e.emit("runtime:error", json!(err));
+                            } else {
+                                e.changed();
                             }
-                            e.changed();
                         }
                         "stop" => {
                             e.stop_all();

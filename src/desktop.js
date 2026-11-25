@@ -9,7 +9,7 @@ export async function initializeDesktop() {
   const callbacks = new Map()
   const dispatch = (event, payload) => {
     if (event === 'runtime:snapshot') api.runtimeSnapshot = payload
-    for (const callback of callbacks.get(event) || []) callback(payload)
+    for (const callback of callbacks.get(event) || []) { try {callback(payload)} catch(error) {console.error(error)} }
   }
   const subscribe = event => callback => {
     if (!callbacks.has(event)) callbacks.set(event, new Set())
@@ -26,7 +26,7 @@ export async function initializeDesktop() {
     reportError: error => dispatch('runtime:error', String(error)),
     getConfig: () => request('config:get'), setConfig: config => request('config:set', config),
     checkEnvironment: () => request('environment:check'),
-    getTdlVersion: () => request('tdl:version'), previewFilter: payload => request('filter:preview', payload),
+    getTdlVersion: () => request('tdl:version'), previewFilter: payload => request('filter:preview', payload), readFilterSample: file => request('filter:readSample', file),
     run: payload => request('tdl:run', payload), runJob: payload => request('job:run', payload),
     stop: id => request('tdl:stop', id),
     startCommentForward: payload => request('comment-forward:start', payload),
@@ -71,4 +71,8 @@ export async function initializeDesktop() {
   const snapshot = await request('runtime:get')
   if (!api.runtimeSnapshot || snapshot.revision >= api.runtimeSnapshot.revision) api.runtimeSnapshot = snapshot
   hydrateStorage(api.runtimeSnapshot)
+  let syncing=false
+  const sync=async()=>{if(syncing||document.hidden)return;syncing=true;try{const snapshot=await request('runtime:get');if(snapshot.revision >= (api.runtimeSnapshot?.revision??-1))dispatch('runtime:snapshot',snapshot)}catch(error){dispatch('runtime:error',String(error))}finally{syncing=false}}
+  window.addEventListener('focus',sync)
+  document.addEventListener('visibilitychange',sync)
 }

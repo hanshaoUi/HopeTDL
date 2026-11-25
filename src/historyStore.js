@@ -204,6 +204,7 @@ function setChatPrefs(prefs, ns = nsKey()) {
   const all = readJson(CHAT_PREFS_KEY, {})
   all[ns] = prefs || { favorites: {}, recent: [] }
   writeJson(CHAT_PREFS_KEY, all)
+  appState.chatPrefsVersion += 1
 }
 
 function getChatCategoryState(ns = nsKey()) {

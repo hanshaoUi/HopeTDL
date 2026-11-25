@@ -10,20 +10,22 @@ import {
   runScheduledTaskNow,
 } from "../utils";
 import { message, dialog } from "../ui/naive";
-import { toArgs } from '../../shared/jobSpec.mjs';
+import { toArgs, sourceChatForSpec } from '../../shared/jobSpec.mjs';
+import { validateJob } from '../../shared/validateJob.mjs';
 import AppIcon from "../components/AppIcon.vue";
 const showCreate = ref(false),
-  taskId = ref(""),
+  taskId = ref(null),
   mode = ref("once"),
   minutes = ref(60),
   busy = ref(false),
   draft = ref(null),
-  triggerMode = ref("time");
+  triggerMode = ref("time"), watchChat = ref('');
 function localTime() {
   const d = new Date(Date.now() + 3600000);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 const runAt = ref(localTime());
+watch(showCreate,show=>{if(show && new Date(runAt.value).getTime()<=Date.now())runAt.value=localTime()});
 const groups = computed(() => [
   {title:'活跃计划', rows:appState.schedules.filter(s=>s.enabled && !appState.schedulerPaused)},
   {title:'暂停 / 停用', rows:appState.schedules.filter(s=>!s.enabled || appState.schedulerPaused)}
@@ -47,14 +49,18 @@ watch(
 );
 watch(() => appState.planDraft, value => {
   if (!value) return;
+  appState.planDraft = null;
+  try {
   const spec = JSON.parse(JSON.stringify(value.spec));
-  draft.value = {id:'workbench-draft', title:value.title, type:spec.kind, spec, args:spec.kind==='comment-forward'?[]:toArgs(spec)};
+  validateJob(spec);
+  draft.value = {id:'workbench-draft', title:value.title, type:spec.kind, spec, args:['comment-forward','workflow'].includes(spec.kind)?[]:toArgs(spec)};
   taskId.value = draft.value.id;
   triggerMode.value = 'time';
   showCreate.value = true;
-  appState.planDraft = null;
+  } catch(error) { message.error(error.message); }
 }, {immediate:true});
 const selectedTemplate = computed(() => templates.value.find(t=>t.id===taskId.value));
+watch(selectedTemplate, task => {watchChat.value=sourceChatForSpec(task?.spec)||task?.watchChat||''}, {immediate:true});
 const incrementalAllowed = computed(() => ['export','forward'].includes(templates.value.find(t=>t.id===taskId.value)?.spec?.kind));
 watch(incrementalAllowed, allowed => {if(!allowed) triggerMode.value='time'});
 function time(v) {
@@ -79,6 +85,7 @@ async function save() {
       runAt: at,
       intervalMinutes: minutes.value,
       triggerMode: triggerMode.value,
+      watchChat: watchChat.value.trim(),
     });
     showCreate.value = false;
     message.success("计划已创建");
@@ -216,7 +223,8 @@ function remove(s) {
           ><n-select
             v-model:value="taskId"
             :options="options"
-            placeholder="选择一个已有任务"
+            :disabled="!options.length"
+            :placeholder="options.length ? '选择一个已有任务' : '暂无可用任务模板'"
             filterable
           />
         </div>
@@ -234,6 +242,7 @@ function remove(s) {
           >
         </div>
         <div v-if="incrementalAllowed" class="field-stack"><label>触发方式</label><n-radio-group v-model:value="triggerMode"><n-radio-button value="time">到点执行</n-radio-button><n-radio-button value="chat-update">频道有更新才执行</n-radio-button></n-radio-group></div>
+        <div v-if="incrementalAllowed && triggerMode==='chat-update'" class="field-stack"><label for="plan-watch-chat">检测来源对话</label><input id="plan-watch-chat" v-model="watchChat" class="field-input" placeholder="源频道 / 群组 ID 或 @用户名" /><p class="field-help">检测此来源的新消息，再导出增量范围；转发目标沿用任务模板。</p></div>
         <div v-if="draft && taskId===draft.id" class="workflow-note">当前表单草稿 · 未执行。创建计划后会按当前演练 / 正式设置运行。</div>
         <div v-if="mode === 'once'" class="field-stack">
           <label for="plan-time">执行时间</label
@@ -247,9 +256,10 @@ function remove(s) {
           </p>
         </div>
         <div class="flow-actions">
-          <button class="secondary-button" @click="showCreate = false">
+          <button type="button" class="secondary-button" @click="showCreate = false">
             取消</button
           ><button
+            type="button"
             class="primary-button"
             :disabled="busy || !taskId"
             @click="save"

@@ -87,7 +87,7 @@ function logText(log) {
 }
 
 async function clearLogs() {
-  if (!appState.logs.length) return
+  if (!appState.logs.length && !Object.keys(appState.liveLines).length && !appState.loginQr) return
   try {
     await confirmHtml('<p>清空后当前日志面板内容会被移除，但不会影响已经运行的任务记录。</p>', '清空任务日志', {
       confirmButtonText: '清空',
@@ -169,7 +169,7 @@ watch(() => appState.logVersion, async () => {
           <pre class="log-line">{{ diskTail }}</pre>
         </template>
         <div v-if="!diskTail && !appState.logs.length && !liveLogs.length" class="log-empty">暂无日志。运行任务后会实时显示 tdl 输出。</div>
-        <div v-else-if="!visibleLogs.length && !liveLogs.length" class="log-empty">当前筛选条件下没有日志。</div>
+        <div v-else-if="!diskTail && !visibleLogs.length && !liveLogs.length" class="log-empty">当前筛选条件下没有日志。</div>
         <div v-if="truncated" class="log-truncated">
           仅显示最近 {{ visibleLogs.length }} 行（缓冲上限 {{ MAX_LOG_LINES }} 行）。「复制全部」仍会导出缓冲区内的全部匹配行。
         </div>

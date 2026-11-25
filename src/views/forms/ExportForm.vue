@@ -8,14 +8,15 @@ import ChatSelect from '../../components/ChatSelect.vue'
 import { appState } from '../../state.js'
 import { chatId as getChatId, chatTitle as getChatTitle, findChatByValue } from '../../chatCache'
 import { dedupeExportRecords, mergeExportRecord, readJson, saveForwardRecord, touchRecentChat, writeJson } from '../../historyStore'
-import { useAppliedRecord } from '../../useAppliedRecord'
+import { useAppliedRecord, useSelectedChat } from '../../useAppliedRecord'
+import { validateJob } from '../../../shared/validateJob.mjs'
 import { resolveRangeStart } from '../../exportRange'
 
-const hintTheme = { fontSize: '12px', lineHeight: '1.6', iconSize: '16px', padding: '10px 12px', iconMargin: '10px 8px 0 12px' }
 const chat = ref('')
 const type = ref('id')
 const input = ref('')
 const all = ref(true)
+const withContent = ref(true)
 const raw = ref(false)
 const output = ref('')
 const selectedSourceChat = ref(null)
@@ -195,6 +196,7 @@ function makeRecord(extra = {}) {
     input: usedInput,
     usedInput,
     all: all.value,
+    withContent: withContent.value,
     raw: raw.value,
     output: output.value,
     ns: nsKey.value,
@@ -230,9 +232,11 @@ function applyRecord(record, mode = 'all') {
   if (!record) return
   if (mode === 'all') {
     chat.value = record.chat || ''
+    selectedSourceChat.value = findChatByValue(chat.value, appState.cachedChats || [])
     type.value = record.type || 'id'
     input.value = record.input || ''
     all.value = record.all ?? true
+    withContent.value = record.withContent ?? record.all ?? true
     raw.value = record.raw ?? false
     output.value = record.output || ''
   }
@@ -241,6 +245,7 @@ function applyRecord(record, mode = 'all') {
     type.value = record.type || 'id'
     input.value = record.input || ''
     all.value = record.all ?? true
+    withContent.value = record.withContent ?? record.all ?? true
     raw.value = record.raw ?? false
     if (!output.value) output.value = record.output || ''
   }
@@ -341,6 +346,7 @@ function applyAnalyzeResultToRecord(record, analysis) {
     chat: next.chat,
     selector: { type: next.type || 'id', input: next.input },
     all: next.all,
+    withContent: next.withContent,
     raw: next.raw,
     output: next.output
   })
@@ -369,30 +375,37 @@ async function pickOutput() {
   if (f) { output.value = f; autoOutput.value = false }
 }
 
+let externalApplied = false
 // 如果从对话列表中点击“导出”，自动填充源聊天 ID，并尝试匹配该聊天历史记录
 useAppliedRecord('selectedExportRecord', record => {
+  externalApplied = true
   loadMemory()
   applyRecord(record, 'all')
+  autoOutput.value = !record.output
 })
+
+useSelectedChat(row => {
+  externalApplied = true
+  loadMemory()
+  chat.value = String(getChatId(row) || '')
+  selectedSourceChat.value = row
+  touchRecentChat(row)
+  input.value = ''
+  const remembered = getChatMemory(chat.value)
+  if (remembered) applyRecord(remembered, 'chat-id')
+  autoOutput.value = true
+}, 'export')
 
 onMounted(async () => {
   loadMemory()
 
-  if (appState && appState.selectedChat) {
-    const row = appState.selectedChat
-    const id = row.id || row.dialog_id || row.dialogID || ''
-    chat.value = String(id)
-    selectedSourceChat.value = row
-    touchRecentChat(row)
-    const remembered = getChatMemory(String(id))
-    if (remembered) applyRecord(remembered, 'chat-id')
-  } else if (exportMemory.value.last) {
+  if (!externalApplied && exportMemory.value.last) {
     // 没有从列表传入聊天时，默认恢复上一次的 -c 和 -i，但输出文件重新生成，避免覆盖旧文件。
     applyRecord(exportMemory.value.last, 'all')
   }
 
-  autoOutput.value = true
-  await updateSmartOutput({ force: true })
+  if(!externalApplied) autoOutput.value = true
+  if(autoOutput.value) await updateSmartOutput({ force: true })
 
   if (!window.tdlApi?.onDone) return
   offDone = window.tdlApi.onDone(async (data) => {
@@ -422,8 +435,9 @@ watch([chat, type, input], () => updateSmartOutput())
 const spec = computed(() => ({
   kind: 'export',
   chat: chat.value,
-  selector: { type: type.value, input: input.value },
+  selector: input.value.trim() || !['id','all'].includes(type.value) ? { type: type.value, input: input.value.trim() } : null,
   all: all.value,
+  withContent: withContent.value,
   raw: raw.value,
   output: output.value
 }))
@@ -450,6 +464,7 @@ function forwardThreadLabel() {
 }
 
 async function run() {
+  if(!chat.value.trim() || !output.value.trim()){message.error('请填写源对话和输出文件');return}
   if (requiresInput() && !String(input.value || '').trim()) {
     const remembered = getChatMemory(chat.value)
     if (remembered?.input) {
@@ -461,6 +476,7 @@ async function run() {
     }
   }
 
+  try { validateJob(previewSpec.value) } catch(error) { message.error(error.message); return }
   if (canAutoAnalyzeNextInput()) {
     message.info('本次未填写 -i，将按 tdl 默认范围导出；完成后会从输出 JSON 自动识别最大消息 ID，并生成下次的 -i。')
   }
@@ -491,6 +507,7 @@ async function run() {
     }
   }
 
+  const submitted = JSON.parse(JSON.stringify(spec.value)), submittedForward = JSON.parse(JSON.stringify(forwardSpec.value))
   const record = makeRecord({
     usedInput: String(input.value || '').trim(),
     autoAnalyzeNextInput: canAutoAnalyzeNextInput()
@@ -499,7 +516,7 @@ async function run() {
   saveMemory(record)
   if (autoForward.value) {
     try {
-      await runJobAndWait(spec.value, '导出消息')
+      await runJobAndWait(window.tdlApi?.nativeRuntime ? {kind:'workflow',steps:[submitted,submittedForward]} : submitted, window.tdlApi?.nativeRuntime ? '导出后转发' : '导出消息')
       await finalizeExportMemory(record)
       saveForwardRecord({
         sourceType: 'file',
@@ -514,7 +531,7 @@ async function run() {
         time: new Date().toLocaleString(),
         chain: 'export-forward'
       })
-      await runJob(forwardSpec.value, '导出后转发')
+      if(!window.tdlApi?.nativeRuntime) await runJob(submittedForward, '导出后转发')
       message.success('导出成功，已启动后续转发')
     } catch (err) {
       message.error(`导出后转发链路已停止：${err?.message || err}`)
@@ -525,7 +542,8 @@ async function run() {
   pendingExportTaskId.value = started?.taskId || ''
   pendingExportRecord.value = record
 }
-useWorkbenchPreview(spec)
+const previewSpec=computed(()=>autoForward.value?{kind:'workflow',steps:[spec.value,forwardSpec.value]}:spec.value)
+useWorkbenchPreview(previewSpec)
 </script>
 <template>
   <div class="card">
@@ -574,28 +592,28 @@ useWorkbenchPreview(spec)
           </div>
         </n-form-item>
       </div>
-      <n-alert class="form-hint" :theme-overrides="hintTheme"
+      <n-alert class="form-hint"
         v-if="requiresInput() && !input"
         type="warning"
         
         :show-icon="true" :closable="false"
         style="margin-bottom:16px"
         >最近 N 条需要 -i；按消息 ID 留空时会全量导出，完成后自动读取输出 JSON 的最大消息 ID，生成下次续导范围。</n-alert>
-      <n-alert class="form-hint" :theme-overrides="hintTheme"
+      <n-alert class="form-hint"
         v-if="canAutoAnalyzeNextInput()"
         type="info"
         
         :show-icon="true" :closable="false"
         style="margin-bottom:16px"
         >未填写 -i：本次会按 tdl 默认范围导出；完成后软件会读取 output JSON，记录最大消息 ID，并自动生成下次 -i。</n-alert>
-      <n-alert class="form-hint" :theme-overrides="hintTheme"
+      <n-alert class="form-hint"
         v-if="chatLastRecord"
         type="info"
         
         :show-icon="true" :closable="false"
         style="margin-bottom:16px"
         >{{ `当前聊天上次导出：-i ${chatLastRecord.input || '未填写'}，时间：${chatLastRecord.time || '-'}` }}</n-alert>
-      <n-form-item label="选项"><n-checkbox v-model:checked="all">包含消息正文</n-checkbox><n-checkbox v-model:checked="raw">保留原始结构</n-checkbox></n-form-item>
+      <n-form-item label="选项"><n-checkbox v-model:checked="withContent">包含消息正文</n-checkbox><n-checkbox v-model:checked="all">包含非媒体消息</n-checkbox><n-checkbox v-model:checked="raw">保留原始结构</n-checkbox></n-form-item>
       <n-form-item label="输出文件">
         <div style="display:flex; gap:10px; align-items:center; width:100%">
           <n-input v-model:value="output" placeholder="messages.json 绝对路径" style="flex:1" />
@@ -642,7 +660,7 @@ useWorkbenchPreview(spec)
     <div style="height:16px"></div>
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
       <n-button type="primary" @click="run">开始导出</n-button>
-      <n-button @click="saveMemory">仅保存当前 -c / -i</n-button>
+      <n-button @click="saveMemory()">仅保存当前 -c / -i</n-button>
     </div>
   </div>
 

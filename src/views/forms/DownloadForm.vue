@@ -7,7 +7,8 @@ import CommandPreview from '../../components/CommandPreview.vue'
 import ChatSelect from '../../components/ChatSelect.vue'
 import { appState } from '../../state.js'
 import { getDownloadRecords, saveDownloadRecord } from '../../historyStore'
-import { useAppliedRecord } from '../../useAppliedRecord'
+import { useAppliedRecord, useSelectedChat } from '../../useAppliedRecord'
+import { chatId } from '../../chatCache'
 
 const sourceType = ref('url')
 const urlsText = ref('')
@@ -42,6 +43,12 @@ function timestampToken() {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
 }
 
+function newDraftToken() {
+  return `${timestampToken()}-${globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)}`
+}
+const draftToken = ref(newDraftToken())
+let draftReserved = false
+
 function cleanPathPart(value) {
   return String(value || 'chat').replace(/[\\/:*?"<>|#%{}~&\s]+/g, '_').slice(0, 60) || 'chat'
 }
@@ -55,7 +62,7 @@ function joinPath(base, child) {
 
 function defaultCommentsWorkDir() {
   const base = commentsWorkDir.value || dir.value || appState.config?.defaultDownloadDir || ''
-  return joinPath(base, `comment-download_${timestampToken()}`)
+  return joinPath(base, `comment-download_${draftToken.value}`)
 }
 
 function commentExportFile(workDir, id) {
@@ -86,25 +93,25 @@ const spec = computed(() => ({
   }
 }))
 
-const previewCommand = computed(() => {
-  if (sourceType.value !== 'comments') return commandTextForSpec(spec.value)
-  const ids = commentsIds.value.length ? commentsIds.value : ['<主消息ID>']
-  const lines = [
-    '# 评论区下载会先导出评论区 JSON，再下载其中媒体'
-  ]
-  for (const id of ids) {
-    lines.push(commandTextForSpec({
-      kind: 'export',
-      chat: commentsChat.value || '<源频道/群组>',
-      reply: id,
-      all: true,
-      withContent: true,
-      output: commentExportFile('<workDir>', id)
-    }))
-  }
-  lines.push(commandTextForSpec(spec.value))
-  return lines.join('\n')
+const commentDraftDirectory = computed(defaultCommentsWorkDir)
+const executableSpec = computed(()=>{
+  if(sourceType.value!=='comments')return spec.value
+  if(!commentsIds.value.length)return {kind:'workflow',steps:[]}
+  const outputs=commentsIds.value.map(id=>commentExportFile(commentDraftDirectory.value,id))
+  return {kind:'workflow',steps:[...commentsIds.value.map((id,i)=>({kind:'export',chat:commentsChat.value,reply:id,all:true,withContent:true,output:outputs[i]})),{...spec.value,source:{type:'file',items:outputs}}]}
 })
+
+// Keep previews stable until submitted, then allocate a fresh directory for
+// the next run/plan. Each submitted spec owns an immutable path snapshot.
+function reserveSubmission() {
+  if (sourceType.value === 'comments') {
+    if (draftReserved) draftToken.value = newDraftToken()
+    draftReserved = true
+  }
+  return JSON.parse(JSON.stringify(executableSpec.value))
+}
+
+const previewCommand = computed(() => commandTextForSpec(executableSpec.value))
 
 async function pickDir() {
   const selected = await window.tdlApi.openDirectory({ defaultPath: dir.value || await defaultOutputDir() })
@@ -166,6 +173,7 @@ async function run() {
       message.error('请填写评论区所属的源频道 / 群组')
       return
     }
+    if(commentsIds.value.some(id=>!/^\d+$/.test(id)||!Number.isSafeInteger(Number(id))||Number(id)<=0)){message.error('主消息 ID 必须是正的安全整数');return}
     if (!commentsIds.value.length) {
       message.error('请至少填写一个主消息 ID')
       return
@@ -176,6 +184,7 @@ async function run() {
     return
   }
 
+  const submitted = reserveSubmission()
   saveDownloadRecord({
     sourceType: sourceType.value,
     urls: urls.value,
@@ -200,32 +209,24 @@ async function run() {
   })
   loadHistory()
   if (sourceType.value !== 'comments') {
-    await runJob(spec.value, '下载媒体')
+    await runJob(submitted, '下载媒体')
     return
   }
 
-  const workDir = defaultCommentsWorkDir()
-  const exportedFiles = []
-  for (const id of commentsIds.value) {
-    const output = commentExportFile(workDir, id)
-    await runJobAndWait({
-      kind: 'export',
-      chat: commentsChat.value,
-      reply: id,
-      all: true,
-      withContent: true,
-      output
-    }, `导出评论区 ${id}`)
-    exportedFiles.push(output)
+  if(window.tdlApi?.nativeRuntime){await runJob(submitted,'下载评论区媒体');return}
+  for (const step of submitted.steps.slice(0,-1)) {
+    await runJobAndWait(step, `导出评论区 ${step.reply}`)
   }
-
-  await runJob({
-    ...spec.value,
-    source: { type: 'file', items: exportedFiles }
-  }, '下载评论区媒体')
+  await runJob(submitted.steps.at(-1), '下载评论区媒体')
 }
 
 useAppliedRecord('selectedDownloadRecord', applyRecord)
+useSelectedChat(row => {
+  const selected = String(chatId(row) || '')
+  if (commentsChat.value !== selected) commentsIdsText.value = ''
+  commentsChat.value = selected
+  sourceType.value = 'comments'
+}, 'download')
 
 onMounted(async () => {
   loadHistory()
@@ -233,7 +234,7 @@ onMounted(async () => {
     dir.value = await defaultOutputDir()
   }
 })
-useWorkbenchPreview(spec)
+useWorkbenchPreview(executableSpec, { preparePlan: reserveSubmission })
 </script>
 
 <template>

@@ -58,6 +58,7 @@ export const appState = reactive({
   cachedChats: [],
   chatCacheMeta: null,
   chatCacheVersion: 0,
+  chatPrefsVersion: 0,
   chatCacheLoading: false,
   recovery: recoveryInfo,
   /**
@@ -76,7 +77,6 @@ export const appState = reactive({
   // 日志抽屉默认收起：展开态会吃掉三分之一屏幕，而多数时候用户不看它。
   showLog: false,
   activeView: 'newTask',
-  workbenchRequest: null,
   planTaskId: '',
   planDraft: null,
   tasksTab: 'all',

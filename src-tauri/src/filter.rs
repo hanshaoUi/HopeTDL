@@ -166,7 +166,33 @@ pub fn media_kind(v: &Value) -> &'static str {
                     .iter()
                     .any(|a| k.contains(a))
             {
-                out.push(text(x));
+                let value = text(x);
+                let media_field = [
+                    "file", "path", "mime", "media", "document", "photo", "video",
+                ]
+                .iter()
+                .any(|a| k.contains(a));
+                let metadata_type = k == "type"
+                    && ["message", "service", "message_service"]
+                        .contains(&value.to_lowercase().as_str());
+                if !value.trim().is_empty()
+                    && !metadata_type
+                    && (depth > 0
+                        || media_field
+                        || k == "type"
+                            && [
+                                "photo",
+                                "video",
+                                "image",
+                                "document",
+                                "audio",
+                                "sticker",
+                                "animation",
+                            ]
+                            .contains(&value.to_lowercase().as_str()))
+                {
+                    out.push(value);
+                }
             } else if (x.is_object() || x.is_array())
                 && ["file", "media", "document", "photo", "video", "content"]
                     .iter()
@@ -225,34 +251,43 @@ pub struct Filter {
 impl Filter {
     pub fn new(c: &Value) -> Result<Self> {
         let global = c["forwardFilterEnabled"] != false;
-        let mut raw = if global {
+        let global_raw = if global {
             keywords(&c["filterKeywordsText"])
         } else {
             vec![]
         };
-        raw.extend(keywords(if c["blockKeywordsText"].is_null() {
+        let local_raw = keywords(if c["blockKeywordsText"].is_null() {
             &c["blockKeywords"]
         } else {
             &c["blockKeywordsText"]
-        }));
-        let mut seen = BTreeSet::new();
-        raw.retain(|s| seen.insert(s.clone()));
-        let flags = if c["keywordCaseSensitive"] == true {
-            "m"
-        } else {
-            "im"
-        };
+        });
         let mut rules = vec![];
-        for s in raw {
-            let source = if c["keywordRegexMode"] == true {
-                s.clone()
-            } else {
-                regex::escape(&s)
-            };
-            let re = Regex::with_flags(&source, flags)
-                .or_else(|_| Regex::with_flags(&regex::escape(&s), flags))
-                .map_err(|e| e.to_string())?;
-            rules.push((s, re));
+        let mut seen = BTreeSet::new();
+        for (raw, case, regex) in [
+            (
+                global_raw,
+                c["keywordCaseSensitive"] == true,
+                c["keywordRegexMode"] == true,
+            ),
+            (
+                local_raw,
+                c["blockKeywordCaseSensitive"]
+                    .as_bool()
+                    .unwrap_or(c["keywordCaseSensitive"] == true),
+                c["blockKeywordRegexMode"]
+                    .as_bool()
+                    .unwrap_or(c["keywordRegexMode"] == true),
+            ),
+        ] {
+            for s in raw {
+                let source = if regex { s.clone() } else { regex::escape(&s) };
+                if !seen.insert((source.clone(), case)) {
+                    continue;
+                }
+                let re = Regex::with_flags(&source, if case { "m" } else { "im" })
+                    .map_err(|e| format!("无效关键词正则 {s}: {e}"))?;
+                rules.push((s, re));
+            }
         }
         let enabled = !rules.is_empty()
             || global
@@ -381,7 +416,9 @@ impl Filter {
                             hits.push(h);
                         }
                     }
-                    self.rewrite(item, 0, stats);
+                    if self.enabled {
+                        self.rewrite(item, 0, stats);
+                    }
                     ids.insert(message_id(item).unwrap());
                 }
                 self.visit(item, key, stats, hits, ids);

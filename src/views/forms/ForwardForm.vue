@@ -1,4 +1,5 @@
 <script setup>
+import { validateJob } from '../../../shared/validateJob.mjs'
 import { useWorkbenchPreview } from '../../composables/useWorkbenchPreview'
 import { ref, computed, onMounted } from 'vue'
 import { commandTextForSpec, defaultOutputDir, runJob } from '../../utils'
@@ -78,7 +79,7 @@ useSelectedChat(row => {
   selectedTargetChat.value = row
   touchRecentChat(row)
   peer.value = String(row.id || row.dialog_id || row.dialogID || row.username || '')
-})
+}, 'forward')
 
 onMounted(async () => {
   if (!from.value && sourceType.value === 'file') from.value = await defaultJsonFile()
@@ -137,6 +138,7 @@ function makeRecord(extra = {}) {
 }
 
 async function run() {
+  try { validateJob(spec.value) } catch(error) { message.error(error.message); return }
   if (!from.value || !peer.value) {
     message.error('请先填写来源和目标 Peer')
     return

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { appState } from '../../state'
 import { message, confirmHtml } from '../../ui/naive'
 import {
@@ -9,12 +9,13 @@ import {
   createScheduleFromTask,
   deleteSchedule,
   persistTasks,
-  retryTask,
+  retryTask, retryPending,
   runScheduledTaskNow,
   stopTask,
   toggleSchedule
 } from '../../utils'
 import { isTaskInterrupted, isTaskRunning, TASK_STATE, taskStatusType } from '../../taskState'
+import { sourceChatForSpec } from '../../../shared/jobSpec.mjs'
 
 const statusFilter = ref('全部')
 const selectedTaskId = ref('')
@@ -56,10 +57,17 @@ const schedulableTaskOptions = computed(() => appState.tasks
     label: `${task.title || task.type} / ${task.createdAt || task.id}`,
     value: task.id
   })))
-const triggerOptions = [
+const selectedTemplateTask = computed(() => appState.tasks.find(t => t.id === scheduleDraft.value.taskId) || null)
+const canWatchUpdate = computed(() => ['export', 'forward'].includes(selectedTemplateTask.value?.spec?.kind || selectedTemplateTask.value?.type || ''))
+const triggerOptions = computed(() => [
   { label: '到点直接执行', value: 'time' },
-  { label: '频道有更新才执行', value: 'chat-update' }
-]
+  { label: '频道有更新才执行', value: 'chat-update', disabled: !canWatchUpdate.value }
+])
+watch(canWatchUpdate, allowed => {
+  if (!allowed && scheduleDraft.value.triggerMode === 'chat-update') {
+    scheduleDraft.value.triggerMode = 'time'
+  }
+})
 
 function taskCommand(task) {
   return task.command || (task.spec ? commandTextForSpec(task.spec) : commandText(task.args || []))
@@ -112,10 +120,15 @@ function fromDatetimeLocal(value) {
 }
 
 function taskSourceChat(task) {
+  if(sourceChatForSpec(task?.spec)) return sourceChatForSpec(task.spec)
   const args = task?.args || []
   const chatIndex = args.findIndex(item => ['-c', '--chat'].includes(String(item)))
   if (chatIndex >= 0 && args[chatIndex + 1]) return String(args[chatIndex + 1])
   return ''
+}
+
+async function togglePlan(schedule) {
+  try { await toggleSchedule(schedule) } catch(error) { message.error(error.message) }
 }
 
 function taskArgValue(task, names = []) {
@@ -278,7 +291,7 @@ async function clearFinished() {
 
   if (window.tdlApi?.nativeRuntime) await window.tdlApi.clearFinished()
   else {
-    appState.tasks = appState.tasks.filter(isTaskRunning)
+    appState.tasks = appState.tasks.filter(t=>isTaskRunning(t)||t.state===TASK_STATE.QUEUED)
     persistTasks()
   }
   message.success('已清理已完成任务')
@@ -410,7 +423,7 @@ async function retryInterruptedTasks() {
             <td>{{ schedule.runCount || 0 }}</td>
             <td>
               <div class="action-row dense">
-                <n-button size="small" @click="toggleSchedule(schedule)">{{ schedule.enabled ? '停用' : '启用' }}</n-button>
+                <n-button size="small" @click="togglePlan(schedule)">{{ schedule.enabled ? '停用' : '启用' }}</n-button>
                 <n-button size="small" tertiary @click="openScheduleDetails(schedule)">详情</n-button>
                 <n-button size="small" secondary @click="runScheduleNow(schedule)">立即运行</n-button>
                 <n-button size="small" type="error" @click="removeSchedule(schedule)">删除</n-button>
@@ -524,7 +537,7 @@ async function retryInterruptedTasks() {
               <div class="action-row dense">
                 <n-button size="small" tertiary @click="openTaskDetails(task)">详情</n-button>
                 <n-button size="small" @click="copyTaskCommand(task)">复制命令</n-button>
-                <n-button size="small" secondary @click="handleRetry(task)">重试</n-button>
+                <n-button size="small" secondary :disabled="retryPending(task)" @click="handleRetry(task)">重试</n-button>
                 <n-button size="small" type="error" :disabled="!isTaskRunning(task) && task.state !== TASK_STATE.QUEUED" @click="handleStop(task)">停止</n-button>
               </div>
             </td>
@@ -564,7 +577,7 @@ async function retryInterruptedTasks() {
     </div>
 
     <div class="task-detail-section">
-      <div class="table-meta">执行命令</div>
+      <div class="table-meta">执行命令 <button class="btn sm ghost" @click="appState.focusedTaskId=selectedTask.id;appState.activeView='tasks';appState.showLog=true">在任务页查看日志</button></div>
       <pre class="task-detail-box task-detail-code">{{ taskCommand(selectedTask) }}</pre>
     </div>
 

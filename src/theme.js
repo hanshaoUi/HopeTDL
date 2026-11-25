@@ -6,7 +6,6 @@ const media = window.matchMedia('(prefers-color-scheme: dark)')
 const systemDark = ref(media.matches)
 export const resolvedTheme = computed(() =>
   appState.theme === 'system' ? (systemDark.value ? 'dark' : 'light') : appState.theme)
-export const themeLabel = computed(() => ({system:'跟随系统',light:'浅色',dark:'深色'})[appState.theme])
 
 export function installTheme() {
   watch(resolvedTheme, value => {

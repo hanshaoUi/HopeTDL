@@ -1,3 +1,5 @@
+import { quoteShellArg } from '../shared/shellQuote.mjs'
+import { validateJob } from '../shared/validateJob.mjs'
 import { appState } from './state'
 import { message } from './ui/naive'
 import { appendLog } from './logStore'
@@ -19,11 +21,8 @@ import {
 const TASKS_KEY = 'hopetdl.tasks.v1'
 const SCHEDULES_KEY = 'hopetdl.schedules.v1'
 
-export function quoteArg(v) {
-  if (v === undefined || v === null || v === '') return ''
-  const s = String(v)
-  return /[\s'"{}]/.test(s) ? JSON.stringify(s) : s
-}
+const windowsShell = () => /win/i.test(globalThis.navigator?.platform || '')
+export function quoteArg(v) { return quoteShellArg(v, windowsShell()) }
 
 export function globalArgs() {
   const c = appState.config || {}
@@ -38,12 +37,64 @@ export function globalArgs() {
 
 export function commandText(args) {
   const c = appState.config || {}
-  return [c.tdlPath || 'tdl', ...globalArgs(), ...args].map(quoteArg).join(' ')
+  return (windowsShell() ? '& ' : '') + [c.tdlPath || 'tdl', ...globalArgs(), ...args].map(quoteArg).join(' ')
+}
+
+function commandArgsToPreviewLines(args) {
+  const c = appState.config || {}
+  const all = [c.tdlPath || 'tdl', ...globalArgs(), ...args]
+  const lines = []
+  let current = [(windowsShell() ? '& ' : '') + quoteArg(all[0])]
+  for (const token of all.slice(1)) {
+    const raw = String(token)
+    if (/^--?[A-Za-z][A-Za-z0-9-]*$/.test(raw) && current.length) {
+      lines.push(current.join(' '))
+      current = ['  ' + quoteArg(raw)]
+    } else {
+      current.push(quoteArg(raw))
+    }
+  }
+  if (current.length) lines.push(current.join(' '))
+  return lines.map(text => ({ text, kind: text.startsWith('  -') ? 'preview-flag' : '' }))
+}
+
+function specCommandEntries(spec) {
+  if (spec?.kind === 'comment-forward') {
+    const dir = spec.workDir || '<workDir>', source = spec.sourceChat || '<源聊天>'
+    const selector = spec.startId || spec.endId ? { type: 'id', input: `${spec.startId || 0},${spec.endId || '9223372036854775807'}` } : null
+    const entries = ['# 评论搬运流程', toArgs({ kind: 'export', chat: source, selector, all: true, withContent: true, output: dir + '/posts.json' })]
+    if (spec.dryRun) return entries.concat('# 演练：不逐条导出、不发送、不写已完成断点')
+    entries.push('# 对每个主消息 ID 执行；已保存的子步骤在续跑时跳过', toArgs({ kind: 'export', chat: source, selector: { type: 'id', input: '<id>,<id>' }, all: true, withContent: true, output: dir + '/queue/post_<id>.json' }))
+    if (spec.includeComments !== false) entries.push(toArgs({ kind: 'export', chat: source, reply: '<id>', all: true, withContent: true, output: dir + '/comments/comments_<id>.json' }))
+    if (!spec.exportOnly) {
+      for (const [enabled, file] of [[spec.forwardMain, 'post_<id>'], [spec.includeComments === false ? false : spec.forwardComments, 'comments_<id>']]) {
+        if (enabled !== false) entries.push(toArgs({ kind: 'forward', from: dir + '/filtered/' + file + '.filtered.json', target: spec.targetTopicId ? { routerFile: dir + '/target_router.txt' } : { peer: spec.targetChat || '<目标聊天>' }, mode: spec.mode || 'direct' }))
+      }
+    }
+    return entries
+  }
+  if (spec?.kind === 'workflow') return spec.steps.flatMap(specCommandEntries)
+  return [toArgs(spec)]
+}
+
+export function previewLinesForSpec(spec) {
+  try {
+    return specCommandEntries(spec).flatMap(entry =>
+      typeof entry === 'string'
+        ? [{ text: entry, kind: 'preview-comment' }]
+        : commandArgsToPreviewLines(entry)
+    )
+  } catch (error) {
+    return [{ text: '# 参数错误：' + error.message, kind: 'preview-comment' }]
+  }
 }
 
 export function commandTextForSpec(spec) {
-  if (spec?.kind === 'workflow') return spec.steps.map(commandTextForSpec).join('\n')
-  return commandText(toArgs(spec))
+  try {
+    return specCommandEntries(spec).map(entry => (typeof entry === 'string' ? entry : commandText(entry))).join('\n')
+  } catch (error) {
+    return '# 参数错误：' + error.message
+  }
 }
 
 export async function defaultOutputDir() {
@@ -101,7 +152,7 @@ if (typeof window !== 'undefined') {
 }
 
 export function createTask(type, args, title, extra = {}) {
-  const id = extra.id || `${type}_${Date.now()}`
+  const id = extra.id || `${type}_${globalThis.crypto?.randomUUID?.() || Date.now()+'_'+Math.random().toString(36).slice(2)}`
   const state = normalizeTaskState(extra.state || extra.status || TASK_STATE.RUNNING)
   const task = normalizeTaskRecord({
     id,
@@ -157,30 +208,46 @@ export async function runJob(spec, title, extra = {}) {
   try {
     return await window.tdlApi.runJob({ taskId: task.id, spec: JSON.parse(JSON.stringify(spec)), task: JSON.parse(JSON.stringify(task)) })
   } catch (error) {
-    if (window.tdlApi.nativeRuntime) appState.tasks = appState.tasks.filter(t=>t.id!==task.id)
+    if (window.tdlApi?.nativeRuntime) appState.tasks = appState.tasks.filter(t=>t.id!==task.id)
     else updateTaskStatus(task.id, TASK_STATE.FAILED, {errorMessage:String(error)})
     throw error
   }
 }
 
 export async function copyTaskCommand(task) {
-  const text = task?.command || commandText(task?.args || [])
-  await navigator.clipboard.writeText(text)
-  message.success('命令已复制')
+  const text = task?.command || (task?.spec ? commandTextForSpec(task.spec) : commandText(task?.args || []))
+  try {
+    await navigator.clipboard.writeText(text)
+    message.success('命令已复制')
+  } catch (err) {
+    message.error('复制失败：' + (err?.message || err))
+  }
 }
 
+const pendingRetries = new Map()
+export function retryPending(task) {
+  return !!task && (['queued','running'].includes(task.state) || appState.tasks.some(t=>t.retryOf===task.id && ['queued','running'].includes(t.state)))
+}
 export async function retryTask(task) {
+  if (!task) return null
+  if (pendingRetries.has(task.id)) return pendingRetries.get(task.id)
+  if (retryPending(task)) throw new Error('任务仍在运行或排队中')
+  const request=retryTaskOnce(task)
+  pendingRetries.set(task.id,request)
+  try {return await request} finally {pendingRetries.delete(task.id)}
+}
+async function retryTaskOnce(task) {
   if (!task) return null
   if (task.spec) {
     const spec = JSON.parse(JSON.stringify(task.spec))
     if (spec.kind === 'comment-forward' && task.state !== TASK_STATE.SUCCESS && (spec.workDir || task.workDir)) {
       spec.workDir = spec.workDir || task.workDir
-      spec.resume = true
+      if(window.tdlApi?.nativeRuntime){const p=await window.tdlApi.readCommentForwardProgress(spec.workDir);if(!p.ok && task.startedAt && !['export-list','export-post','filter-post','export-comments','filter-comments','rehearsal'].includes(task.progress?.stage) && !spec.dryRun)throw new Error('缺少有效断点，无法确认已发送范围；请核对结果后新建任务');spec.resume=!!p.ok}else spec.resume = true
       spec.skipExistingExport = true
     }
-    return runJob(spec, task.title || task.type, { workflowDraft:task.workflowDraft, sourceLabel:task.sourceLabel, targetLabel:task.targetLabel, outputPath:task.outputPath, dryRun:task.dryRun })
+    return runJob(spec, task.title || task.type, { retryOf:task.id, workflowDraft:task.workflowDraft, sourceLabel:task.sourceLabel, targetLabel:task.targetLabel, outputPath:task.outputPath, dryRun:task.dryRun })
   }
-  return runTask(task.type, task.args || [], task.title || task.type)
+  return runTask(task.type, task.args || [], task.title || task.type, {retryOf:task.id})
 }
 
 function scheduleEvent(schedule, kind, text, extra = {}) {
@@ -321,9 +388,9 @@ function forwardArgsForIncrementalFile(args = [], filePath) {
 
 export function runTaskAndWait(type, args, title, extra = {}) {
   return new Promise(async (resolve, reject) => {
-    let offDone = null
+    let offDone = null, task = null
     try {
-      const task = createTask(type, args, title, extra)
+      task = createTask(type, args, title, extra)
       const taskId = task.id
       offDone = window.tdlApi.onDone(data => {
         if (data.taskId !== taskId) return
@@ -334,6 +401,7 @@ export function runTaskAndWait(type, args, title, extra = {}) {
       await window.tdlApi.run({ taskId, args, task: JSON.parse(JSON.stringify(task)) })
     } catch (err) {
       if (offDone) offDone()
+      discardRejectedTask(task, err)
       reject(err)
     }
   })
@@ -341,10 +409,10 @@ export function runTaskAndWait(type, args, title, extra = {}) {
 
 export function runJobAndWait(spec, title, extra = {}) {
   return new Promise(async (resolve, reject) => {
-    let offDone = null
+    let offDone = null, task = null
     try {
-      const args = spec?.kind === 'comment-forward' ? [] : toArgs(spec)
-      const task = createTask(spec.kind, args, title, { ...extra, spec })
+      const args = ['comment-forward','workflow'].includes(spec?.kind) ? [] : toArgs(spec)
+      task = createTask(spec.kind, args, title, { ...extra, spec })
       offDone = window.tdlApi.onDone(data => {
         if (data.taskId !== task.id) return
         if (offDone) offDone()
@@ -354,12 +422,21 @@ export function runJobAndWait(spec, title, extra = {}) {
       await window.tdlApi.runJob({ taskId: task.id, spec: JSON.parse(JSON.stringify(spec)), task: JSON.parse(JSON.stringify(task)) })
     } catch (err) {
       if (offDone) offDone()
+      discardRejectedTask(task, err)
       reject(err)
     }
   })
 }
 
+function discardRejectedTask(task, error) {
+  if (!task) return
+  if (window.tdlApi?.nativeRuntime) appState.tasks = appState.tasks.filter(t => t.id !== task.id)
+  else updateTaskStatus(task.id, TASK_STATE.FAILED, { errorMessage: String(error) })
+}
+
 export async function createScheduleFromTask(task, options = {}) {
+  if (task?.spec) validateJob(task.spec)
+  if (options.triggerMode === 'chat-update' && (!['export','forward'].includes(task?.spec?.kind || task?.type) || !String(options.watchChat || sourceChatForSpec(task?.spec) || sourceChatFromArgs(task?.args)).trim())) throw new Error('增量计划需要填写检测来源对话，且仅支持导出或转发')
   if (!task || ((!Array.isArray(task.args) || !task.args.length) && !(window.tdlApi?.nativeRuntime && task.spec))) {
     throw new Error('该任务没有可重放的 tdl 参数，不能创建定时任务')
   }
@@ -424,6 +501,7 @@ export function deleteSchedule(scheduleId) {
 
 export function toggleSchedule(schedule) {
   if (!schedule) return null
+  if (!schedule.enabled && schedule.mode === 'once' && !(Number(schedule.runAt) > Date.now())) throw new Error('一次性计划时间已过，请编辑为未来时间后再启用')
   schedule.enabled = !schedule.enabled
   if (schedule.enabled) {
     schedule.nextRunAt = nextRunAfter(schedule, schedule.mode === 'interval' ? Date.now() : 0)
@@ -618,11 +696,11 @@ export function startTaskScheduler() {
 export async function stopTask(task) {
   if (!task) return { ok: false, message: '任务不存在' }
   if (!window.tdlApi) return { ok: false, message: '当前不在 Electron 环境中' }
-  const result = task.type === 'comment-forward'
+  const result = task.type === 'comment-forward' && !window.tdlApi.nativeRuntime
     ? await window.tdlApi.stopCommentForward()
     : await window.tdlApi.stop(task.id)
   if (result?.ok) {
-    updateTaskStatus(task.id, '已停止', { finishedAt: new Date().toLocaleString() })
+    if (!window.tdlApi.nativeRuntime) updateTaskStatus(task.id, '已停止', { finishedAt: new Date().toLocaleString() })
     message.warning(result.message || '已请求停止任务')
   } else {
     message.info(result?.message || '任务不在运行中或已结束')

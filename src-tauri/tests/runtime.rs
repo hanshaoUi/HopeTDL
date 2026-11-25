@@ -22,6 +22,15 @@ fn filtering_preserves_metadata_and_applies_types_lines_and_local_rules() {
     assert_eq!(local["count"], 0);
 }
 #[test]
+fn global_regex_and_local_literal_flags_are_independent() {
+    let input = json!({"messages":[{"id":1,"text":"AD123"},{"id":2,"text":"literal.*"},{"id":3,"text":"literalZZ"},{"id":4,"text":"ad123"}]});
+    let result = Filter::new(&json!({"forwardFilterEnabled":true,"filterKeywordsText":"AD[0-9]+","keywordRegexMode":true,"keywordCaseSensitive":true,"blockKeywordsText":"literal.*","blockKeywordRegexMode":false,"blockKeywordCaseSensitive":false})).unwrap().apply(input);
+    assert_eq!(result["count"], 2);
+    assert_eq!(message_ids(&result["json"]), vec![3, 4]);
+    let duplicate = Filter::new(&json!({"filterKeywordsText":"a","blockKeywordsText":"a","filterKeywordAction":"replace","filterKeywordReplacement":"aa"})).unwrap().apply(json!({"messages":[{"id":1,"text":"a"}]}));
+    assert_eq!(duplicate["json"]["messages"][0]["text"], "aa");
+}
+#[test]
 fn regex_replacement_and_nested_ids_match_existing_semantics() {
     let result=Filter::new(&json!({"filterKeywordsText":"(?<=编号)([0-9]+)","keywordRegexMode":true,"filterKeywordAction":"replace","filterKeywordReplacement":"[$1:$&:$$]"})).unwrap().apply(json!({"messages":[{"id":"12","text":"编号123"}]}));
     assert_eq!(result["json"]["messages"][0]["text"], "编号[123:123:$]");
@@ -139,6 +148,8 @@ if 'export' in a:
     output.write_text(json.dumps({'id':999,'messages':[{'id':i,'date':1,'text':'广告' if i==2 else 'message'} for i in ids]}))
 if 'forward' in a and (root/'fail-topic').exists() and arg('--to').endswith('target_router.txt'):
     print('MSG_ID_INVALID',file=sys.stderr);sys.exit(2)
+if 'forward' in a and (root/'fail-comments').exists() and 'comments_2' in arg('--from'):
+    print('comments failure',file=sys.stderr);sys.exit(2)
 if 'forward' in a and (root/'fail-post').exists() and 'post_1' in arg('--from'):
     print('forward failure',file=sys.stderr);sys.exit(2)
 if 'wait-demo' in a:
@@ -273,7 +284,16 @@ print('任务完成')
             .await
             .unwrap();
         let task = done(&e, "limited").await;
-        assert!(task["floodWaitUntil"].as_i64().unwrap() > 0);
+        assert!(task["floodWaitUntil"].is_null());
+        assert!(events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(n, p)| n == "runtime:snapshot"
+                && p["tasks"]
+                    .as_array()
+                    .is_some_and(|tasks| tasks.iter().any(|t| t["id"] == "limited"
+                        && t["floodWaitUntil"].as_i64().is_some_and(|n| n > 0)))));
         assert!(events
             .lock()
             .unwrap()
@@ -286,6 +306,174 @@ print('任务完成')
                 .count(),
             1
         );
+    }
+    #[tokio::test]
+    async fn partial_comment_resume_does_not_resend_a_successful_post() {
+        let (dir, e, _) = fixture();
+        let work = dir.path().join("partial-steps");
+        std::fs::write(dir.path().join("fail-comments"), "").unwrap();
+        let spec = json!({"kind":"comment-forward","sourceChat":"source","targetChat":"@target","delayMs":0,"workDir":work,"continueOnError":true});
+        e.launch(json!({"taskId":"first-pass","spec":spec}))
+            .await
+            .unwrap();
+        let first = done(&e, "first-pass").await;
+        assert_eq!(first["state"], "partial");
+        assert!(!first["errorMessage"].as_str().unwrap().is_empty());
+        assert_eq!(first["failedIds"], json!([2]));
+        assert_eq!(
+            read_json(&work.join("progress.json")).unwrap()["steps"]["2"]["postDone"],
+            true
+        );
+        std::fs::remove_file(dir.path().join("fail-comments")).unwrap();
+        let mut retry = spec.clone();
+        retry["resume"] = json!(true);
+        retry["skipExistingExport"] = json!(true);
+        e.launch(json!({"taskId":"second-pass","spec":retry}))
+            .await
+            .unwrap();
+        assert_eq!(done(&e, "second-pass").await["state"], "success");
+        let calls = std::fs::read_to_string(dir.path().join("calls.jsonl")).unwrap();
+        assert_eq!(
+            calls
+                .lines()
+                .filter(|s| s.contains("forward") && s.contains("post_2"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            calls
+                .lines()
+                .filter(|s| s.contains("forward") && s.contains("comments_2"))
+                .count(),
+            2
+        );
+    }
+    #[tokio::test]
+    async fn successful_group_is_on_disk_before_done_event_and_cancel() {
+        let (dir, _old, _) = fixture();
+        let work = dir.path().join("cancel-checkpoint");
+        let weak = Arc::new(Mutex::new(std::sync::Weak::<Engine>::new()));
+        let hook = weak.clone();
+        let path = work.clone();
+        let saved = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = saved.clone();
+        let e = Engine::new(
+            dir.path().into(),
+            dir.path().join("output"),
+            Arc::new(move |n, p| {
+                if n == "comment-forward:progress" && p["stage"] == "done" && p["id"] == 1 {
+                    observed.store(
+                        read_json(&path.join("progress.json"))
+                            .is_ok_and(|v| v["done"]["1"].is_object()),
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                    if let Some(e) = hook.lock().unwrap().upgrade() {
+                        e.stop("cancel-at-done");
+                    }
+                }
+            }),
+        )
+        .unwrap();
+        *weak.lock().unwrap() = Arc::downgrade(&e);
+        e.launch(json!({"taskId":"cancel-at-done","spec":{"kind":"comment-forward","sourceChat":"source","targetChat":"@target","delayMs":0,"workDir":work}})).await.unwrap();
+        assert_eq!(done(&e, "cancel-at-done").await["state"], "stopped");
+        assert!(saved.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(read_json(&work.join("progress.json")).unwrap()["done"]["1"].is_object());
+    }
+    #[tokio::test]
+    async fn corrupt_export_cache_is_backed_up_and_rebuilt() {
+        let (dir, e, _) = fixture();
+        let work = dir.path().join("invalid-cache");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("posts.json"), "broken").unwrap();
+        e.launch(json!({"taskId":"rebuild","spec":{"kind":"comment-forward","sourceChat":"source","exportOnly":true,"skipExistingExport":true,"delayMs":0,"workDir":work}})).await.unwrap();
+        assert_eq!(done(&e, "rebuild").await["state"], "success");
+        assert!(read_json(&work.join("posts.json")).is_ok());
+        assert!(std::fs::read_dir(&work).unwrap().any(|p| p
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("invalid-")));
+        assert!(e
+            .launch(json!({"spec":{"kind":"comment-forward","sourceChat":"source","resume":true}}))
+            .await
+            .is_err());
+    }
+    #[tokio::test]
+    async fn completion_survives_immediate_task_record_cleanup() {
+        let (dir, _old, _) = fixture();
+        let weak = Arc::new(Mutex::new(std::sync::Weak::<Engine>::new()));
+        let hook = weak.clone();
+        let e = Engine::new(
+            dir.path().into(),
+            dir.path().join("output"),
+            Arc::new(move |n, _| {
+                if n == "tdl:done" {
+                    if let Some(e) = hook.lock().unwrap().upgrade() {
+                        e.store
+                            .update(|d| {
+                                d["tasks"] = json!([]);
+                                Ok(())
+                            })
+                            .unwrap();
+                    }
+                }
+            }),
+        )
+        .unwrap();
+        *weak.lock().unwrap() = Arc::downgrade(&e);
+        let outcome = e
+            .launch_wait(json!({"taskId":"removed","args":["version"]}))
+            .await
+            .unwrap();
+        assert_eq!(outcome["state"], "success");
+        assert_eq!(e.store.snapshot()["tasks"], json!([]));
+        assert!(!e.has_active_tasks());
+    }
+    #[tokio::test]
+    async fn terminal_storage_failure_preserves_outcome_in_memory_and_pauses_plans() {
+        let (dir, e, _) = fixture();
+        let pending = e.clone();
+        let path = dir.path().join("slow.json");
+        let task = tokio::spawn(async move {
+            pending
+                .launch_wait(
+                    json!({"taskId":"disk-failure","args":["chat","export","-c","slow","-o",path]}),
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if e.snapshot()["tasks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|t| t["id"] == "disk-failure" && t["state"] == "running")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        std::fs::remove_file(dir.path().join("runtime.json")).unwrap();
+        std::fs::create_dir(dir.path().join("runtime.json")).unwrap();
+        assert!(task.await.unwrap().is_err());
+        let snapshot = e.snapshot();
+        assert_eq!(snapshot["tasks"][0]["state"], "success");
+        assert!(snapshot["tasks"][0]["persistenceError"].is_string());
+        assert_eq!(snapshot["schedulerPaused"], true);
+        assert!(!e.has_active_tasks());
+    }
+    #[tokio::test]
+    async fn shutdown_prevents_launch_and_preview_accepts_one_message() {
+        let (_dir, e, _) = fixture();
+        e.shutting_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(e.launch(json!({"args":["version"]})).await.is_err());
+        let result=e.preview_filter(&json!({"json":{"id":1,"type":"message","from_name":"Example","text":"sample"},"spec":{}})).unwrap();
+        assert_eq!(result["count"], 1);
     }
     #[tokio::test]
     async fn failed_command_has_one_completion_and_bounded_logs_keep_unicode() {
@@ -366,6 +554,35 @@ print('任务完成')
         assert_eq!(e.store.snapshot()["schedules"][0]["lastSeenMessageId"], 10);
     }
     #[tokio::test]
+    async fn expanded_resume_range_rebuilds_a_narrow_export_cache() {
+        let (dir, e, _) = fixture();
+        let work = dir.path().join("expanded-cache");
+        let mut spec = json!({"kind":"comment-forward","sourceChat":"source","workDir":work,"exportOnly":true,"delayMs":0,"startId":2,"endId":2});
+        e.launch(json!({"taskId":"narrow","spec":spec}))
+            .await
+            .unwrap();
+        assert_eq!(done(&e, "narrow").await["state"], "success");
+        spec["startId"] = json!(0);
+        spec["endId"] = json!(0);
+        spec["resume"] = json!(true);
+        spec["skipExistingExport"] = json!(true);
+        e.launch(json!({"taskId":"expanded","spec":spec}))
+            .await
+            .unwrap();
+        assert_eq!(done(&e, "expanded").await["state"], "success");
+        let progress = read_json(&work.join("progress.json")).unwrap();
+        assert_eq!(progress["done"].as_object().unwrap().len(), 2);
+        let calls = std::fs::read_to_string(dir.path().join("calls.jsonl")).unwrap();
+        assert_eq!(
+            calls.lines().filter(|s| s.contains("posts.json")).count(),
+            2
+        );
+        assert_eq!(
+            calls.lines().filter(|s| s.contains("post_2.json")).count(),
+            1
+        );
+    }
+    #[tokio::test]
     async fn comment_export_checkpoints_and_resume_preserve_order() {
         let (dir, e, _) = fixture();
         let work = dir.path().join("comments work");
@@ -394,6 +611,39 @@ print('任务完成')
                 .lines()
                 .count(),
             before
+        );
+    }
+    #[tokio::test]
+    async fn shutdown_rejects_schedule_registration_before_any_io() {
+        let (_, e, _) = fixture();
+        e.shutting_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let before = e.store.snapshot();
+        assert!(scheduler::execute(e.clone(), "missing", true)
+            .await
+            .unwrap_err()
+            .contains("退出"));
+        assert!(e.schedule_running.lock().unwrap().is_empty());
+        assert_eq!(e.store.snapshot(), before);
+    }
+    #[tokio::test]
+    async fn comment_matching_keeps_global_flags_when_local_rules_exist() {
+        let (_dir, e, _) = fixture();
+        let mut config = e.config().unwrap();
+        config["forwardFilterEnabled"] = json!(true);
+        config["filterKeywordsText"] = json!("AD[0-9]+");
+        config["keywordRegexMode"] = json!(true);
+        config["keywordCaseSensitive"] = json!(true);
+        e.set_config(&config).unwrap();
+        let effective=e.filter_config(&json!({"kind":"comment-forward","blockKeywordsText":"literal.*","keywordRegexMode":false,"keywordCaseSensitive":false})).unwrap();
+        assert_eq!(effective["keywordRegexMode"], true);
+        assert_eq!(effective["blockKeywordRegexMode"], false);
+        assert_eq!(
+            Filter::new(&effective)
+                .unwrap()
+                .apply(json!({"messages":[{"id":1,"text":"AD123"},{"id":2,"text":"literal.*"}]}))
+                ["count"],
+            0
         );
     }
     #[tokio::test]
@@ -614,4 +864,33 @@ fn flood_wait_parser_does_not_mistake_rpc_error_codes_for_seconds() {
     assert_eq!(flood_wait_seconds("FLOOD_WAIT (12)"), Some(12));
     assert_eq!(flood_wait_seconds("FLOOD_WAIT (code 420)"), None);
     assert_eq!(flood_wait_seconds("normal progress 420"), None);
+}
+
+#[test]
+fn plain_text_metadata_does_not_turn_messages_into_media() {
+    let result=Filter::new(&json!({"forwardFilterEnabled":true,"blockTextOnly":true})).unwrap().apply(json!({"messages":[{"id":1,"type":"message","from_name":"Example","file":"","text":"plain"},{"id":2,"type":"message","file":"photo.png"},{"id":3,"media":{"mime_type":"application/pdf","file_name":"document.pdf"}}]}));
+    assert_eq!(result["count"], 2);
+    assert_eq!(result["removedByType"]["text"], 1);
+    assert!(Filter::new(&json!({"keywordRegexMode":true,"blockKeywordsText":"["})).is_err());
+    let input = json!({"messages":[{"id":1,"text":"  keep\n\nspacing  "}]});
+    assert_eq!(
+        Filter::new(&json!({"forwardFilterEnabled":false}))
+            .unwrap()
+            .apply(input.clone())["json"],
+        input
+    );
+}
+#[test]
+fn summary_counts_only_the_selected_message_range() {
+    let dir = tempfile::tempdir().unwrap();
+    write_json(
+        &dir.path().join("posts.json"),
+        &json!({"messages":[{"id":1},{"id":2},{"id":3}]}),
+    )
+    .unwrap();
+    write_json(&dir.path().join("progress.json"),&json!({"done":{"1":{},"2":{}},"failed":{"3":{"id":3,"error":"failed"}},"range":{"startId":2,"endId":3}})).unwrap();
+    let p = hopetdl_lib::comments::progress_summary(dir.path());
+    assert_eq!(p["doneCount"], 1);
+    assert_eq!(p["totalCount"], 2);
+    assert_eq!(p["failedIds"], json!([3]));
 }
