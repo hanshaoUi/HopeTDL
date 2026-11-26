@@ -1,6 +1,6 @@
 {
   "name": "tdl-gui-prototype",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "HopeTDL: workflow-based Telegram transfers, comments, media and native Rust task scheduling",
   "main": "electron/main.cjs",
