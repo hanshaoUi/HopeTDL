@@ -148,6 +148,15 @@ pub async fn execute(e: Arc<Engine>, id: &str, manual: bool) -> Result<Value> {
     save_runtime(&e, &s)?;
     result
 }
+struct TempFileCleanup(Option<std::path::PathBuf>);
+impl Drop for TempFileCleanup {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 async fn perform(e: Arc<Engine>, s: &mut Value) -> Result<Value> {
     if ["comment-forward", "workflow"].contains(&s["spec"]["kind"].as_str().unwrap_or("")) {
         if s["triggerMode"] == "chat-update" {
@@ -221,6 +230,7 @@ async fn perform(e: Arc<Engine>, s: &mut Value) -> Result<Value> {
                 path.clone(),
             ]
         };
+        let _cleanup = TempFileCleanup((s["type"] == "forward").then(|| std::path::PathBuf::from(&path)));
         run_wait(e.clone(), s, export).await?;
         if s["type"] == "forward" {
             jobs::replace_arg(&mut command, &["--from"], path);

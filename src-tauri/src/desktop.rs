@@ -72,6 +72,12 @@ async fn request(
                         {
                             return Err("增量计划需要导出/转发模板和检测来源对话".into());
                         }
+                        if p["schedule"]["mode"] == "once"
+                            && p["schedule"]["enabled"] == true
+                            && p["schedule"]["nextRunAt"].as_i64().unwrap_or(0) <= crate::millis()
+                        {
+                            return Err("一次性计划时间已过，请编辑为未来时间后再启用".into());
+                        }
                         if patch.get("id") != Some(&json!(id)) {
                             return Err("计划 ID 不一致".into());
                         }
@@ -111,13 +117,20 @@ async fn request(
         }
         "runtime:runSchedule" => scheduler::execute(e, &text(&p), true).await,
         "runtime:clearFinished" => {
-            e.store.update(|d| {
-                d["tasks"]
-                    .as_array_mut()
-                    .unwrap()
-                    .retain(|t| ["queued", "running"].contains(&t["state"].as_str().unwrap_or("")));
-                Ok(())
+            let removed_ids = e.store.update(|d| {
+                let mut removed = Vec::new();
+                d["tasks"].as_array_mut().unwrap().retain(|t| {
+                    let keep = ["queued", "running"].contains(&t["state"].as_str().unwrap_or(""));
+                    if !keep {
+                        if let Some(old_id) = t["id"].as_str() {
+                            removed.push(old_id.to_owned());
+                        }
+                    }
+                    keep
+                });
+                Ok(removed)
             })?;
+            e.remove_task_logs(&removed_ids);
             e.changed();
             Ok(json!(true))
         }

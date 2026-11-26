@@ -1,6 +1,6 @@
 <script setup>
 import AppIcon from '../components/AppIcon.vue'
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { dialog, message } from '../ui/naive'
 import { commandTextForSpec, runJob } from '../utils'
 import CommandPreview from '../components/CommandPreview.vue'
@@ -35,6 +35,10 @@ const categoryDraft = ref('')
 const editingCategoryId = ref('')
 const editingCategoryName = ref('')
 const categoryRevision = ref(0)
+const PAGE_SIZE = 100
+const visibleLimit = ref(PAGE_SIZE)
+const loadMoreRef = ref(null)
+let loadMoreObserver = null
 
 const categories = computed(() => {
   categoryRevision.value
@@ -90,10 +94,57 @@ function chatCategoryIds(row) {
   return getChatCategoryIds(row)
 }
 
-function categoryChatCount(categoryId) {
+const categoryChatCounts = computed(() => {
   categoryRevision.value
-  return chats.value.filter(row => getChatCategoryIds(row).includes(categoryId)).length
+  appState.chatPrefsVersion
+  const counts = new Map()
+  for (const row of chats.value || []) {
+    for (const id of getChatCategoryIds(row)) {
+      counts.set(id, (counts.get(id) || 0) + 1)
+    }
+  }
+  return counts
+})
+
+function categoryChatCount(categoryId) {
+  return categoryChatCounts.value.get(categoryId) || 0
 }
+
+const visibleChats = computed(() => filteredChats.value.slice(0, visibleLimit.value))
+const remainingChatsCount = computed(() => Math.max(0, filteredChats.value.length - visibleChats.value.length))
+const hasMoreChats = computed(() => remainingChatsCount.value > 0)
+
+function showMoreChats() {
+  if (!hasMoreChats.value) return
+  visibleLimit.value = Math.min(filteredChats.value.length, visibleLimit.value + PAGE_SIZE)
+}
+
+function bindLoadMoreObserver(el) {
+  if (loadMoreObserver) {
+    loadMoreObserver.disconnect()
+    loadMoreObserver = null
+  }
+  if (!el || typeof IntersectionObserver === 'undefined') return
+  loadMoreObserver = new IntersectionObserver(entries => {
+    if (entries.some(entry => entry.isIntersecting)) {
+      showMoreChats()
+    }
+  }, { rootMargin: '240px 0px' })
+  loadMoreObserver.observe(el)
+}
+
+watch([search, categoryFilter, chats], () => {
+  visibleLimit.value = PAGE_SIZE
+})
+
+watch(loadMoreRef, bindLoadMoreObserver)
+
+onUnmounted(() => {
+  if (loadMoreObserver) {
+    loadMoreObserver.disconnect()
+    loadMoreObserver = null
+  }
+})
 
 function addCategory() {
   try {
@@ -324,15 +375,16 @@ onMounted(() => {
   </div>
 
   <div class="chats-count">
-    显示 {{ filteredChats.length }} / {{ chats.length }} 条
+    显示 {{ filteredChats.length }} / {{ chats.length }} 条<template v-if="hasMoreChats">（已渲染前 {{ visibleChats.length }} 条）</template>
     <span v-if="isFilteredLiveResult" class="mini-muted">· 当前是过滤后的实时结果，未写入缓存</span>
   </div>
 
   <div v-if="!chats.length" class="empty-cell card">还没有对话数据。点「更新缓存」拉取一次。</div>
   <div v-else-if="!filteredChats.length" class="empty-cell card">{{ emptyFilterText }}</div>
 
-  <ul v-else class="chat-list">
-    <li v-for="row in filteredChats" :key="String(chatId(row) || chatTitle(row))" class="chat-card">
+  <template v-else>
+    <ul class="chat-list">
+      <li v-for="row in visibleChats" :key="String(chatId(row) || chatTitle(row))" class="chat-card">
       <button
         type="button"
         class="chat-fav"
@@ -383,4 +435,10 @@ onMounted(() => {
       </div>
     </li>
   </ul>
+  <div v-if="hasMoreChats" ref="loadMoreRef" class="chat-load-more">
+    <n-button size="small" secondary @click="showMoreChats">
+      再显示 {{ Math.min(PAGE_SIZE, remainingChatsCount) }} 条（剩余 {{ remainingChatsCount }} 条）
+    </n-button>
+  </div>
+  </template>
 </template>

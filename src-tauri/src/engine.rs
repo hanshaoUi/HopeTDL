@@ -169,8 +169,11 @@ impl Engine {
         }
         let sample = payload["json"].clone();
         let sample = if sample.is_object()
-            && filter::message_id(&sample).is_some()
             && !sample["messages"].is_array()
+            && (filter::message_id(&sample).is_some()
+                || ["text", "message", "media", "file"]
+                    .iter()
+                    .any(|k| !sample[*k].is_null()))
         {
             json!({"messages":[sample]})
         } else {
@@ -197,6 +200,19 @@ impl Engine {
         }
         drop(_log_guard);
         self.emit("tdl:log", json!({"taskId":id,"level":level,"text":s}));
+    }
+    pub fn remove_task_logs(&self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+        let _log_guard = self.log_lock.lock().unwrap();
+        let dir = self.store.root.join("logs");
+        for id in ids {
+            let clean = safe_id(id);
+            let log = dir.join(format!("{clean}.log"));
+            let _ = fs::remove_file(&log);
+            let _ = fs::remove_file(log.with_extension("previous.log"));
+        }
     }
     fn flood_wait(&self, id: &str, line: &str) {
         if let Some(seconds) = flood_wait_seconds(line) {
@@ -361,24 +377,19 @@ impl Engine {
             let tasks = d["tasks"].as_array_mut().unwrap();
             tasks.retain(|t| t["id"] != id);
             tasks.insert(0, task);
-            let mut terminal = 0;
-            tasks.retain(|t| {
-                if ["running", "queued"].contains(&t["state"].as_str().unwrap_or("")) {
-                    true
-                } else {
-                    terminal += 1;
-                    terminal <= 100
-                }
-            });
-            Ok(())
+            Ok(trim_terminal_tasks(tasks))
         });
-        if let Err(e) = saved {
-            self.active.lock().unwrap().remove(&id);
-            if comment {
-                self.comment_active.store(false, Ordering::SeqCst);
+        let removed_ids = match saved {
+            Ok(removed_ids) => removed_ids,
+            Err(e) => {
+                self.active.lock().unwrap().remove(&id);
+                if comment {
+                    self.comment_active.store(false, Ordering::SeqCst);
+                }
+                return Err(e);
             }
-            return Err(e);
-        }
+        };
+        self.remove_task_logs(&removed_ids);
         let task_lease = TaskLease {
             engine: self.clone(),
             id: id.clone(),
@@ -458,18 +469,34 @@ impl Engine {
                 err = format!("部分消息处理失败，共 {failed_count} 组，请查看失败记录");
             }
             let terminal = json!({"state":state,"status":label,"finishedAt":now(),"exitCode":code,"errorMessage":err,"failedCount":failed_count,"failedIds":result.as_ref().ok().map(|v|v["failedIds"].clone()).unwrap_or(json!([])),"floodWaitUntil":null});
-            let saved = e.store.task(&task_id, terminal.clone());
-            if let Err(storage_error) = &saved {
-                e.store
-                    .volatile_terminal(&task_id, &terminal, storage_error);
-                e.emit(
-                    "runtime:error",
-                    json!(format!(
-                        "任务已结束，但状态保存失败；计划已暂停，请检查磁盘: {storage_error}"
-                    )),
-                );
-            }
-            let completion_result = saved.map(|_| terminal);
+            let saved = e.store.update(|data| {
+                let tasks = data["tasks"].as_array_mut().unwrap();
+                if let Some(task) = tasks.iter_mut().find(|t| t["id"] == task_id) {
+                    for (k, v) in terminal.as_object().unwrap() {
+                        task[k] = v.clone();
+                    }
+                } else {
+                    return Err(format!("任务不存在: {task_id}"));
+                }
+                Ok(trim_terminal_tasks(tasks))
+            });
+            let completion_result = match &saved {
+                Ok(removed_ids) => {
+                    e.remove_task_logs(removed_ids);
+                    Ok(terminal)
+                }
+                Err(storage_error) => {
+                    e.store
+                        .volatile_terminal(&task_id, &terminal, storage_error);
+                    e.emit(
+                        "runtime:error",
+                        json!(format!(
+                            "任务已结束，但状态保存失败；计划已暂停，请检查磁盘: {storage_error}"
+                        )),
+                    );
+                    Err(storage_error.clone())
+                }
+            };
             drop(task_lease);
             e.log(
                 &task_id,
@@ -871,6 +898,26 @@ fn path_env() -> std::ffi::OsString {
     }
     std::env::join_paths(paths).unwrap_or(current)
 }
+fn trim_terminal_tasks(tasks: &mut Vec<Value>) -> Vec<String> {
+    let mut terminal = 0;
+    let mut removed = Vec::new();
+    tasks.retain(|t| {
+        if ["running", "queued"].contains(&t["state"].as_str().unwrap_or("")) {
+            true
+        } else {
+            terminal += 1;
+            let keep = terminal <= 100;
+            if !keep {
+                if let Some(old_id) = t["id"].as_str() {
+                    removed.push(old_id.to_owned());
+                }
+            }
+            keep
+        }
+    });
+    removed
+}
+
 struct TaskLease {
     engine: Arc<Engine>,
     id: String,

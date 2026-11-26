@@ -714,6 +714,61 @@ print('任务完成')
             .is_err());
         assert!(!e.has_processes());
     }
+    #[tokio::test]
+    async fn only_ids_retries_selected_failures_without_replaying_other_groups() {
+        let (dir, e, _) = fixture();
+        let work = dir.path().join("only-ids");
+        std::fs::create_dir_all(&work).unwrap();
+        write_json(
+            &work.join("progress.json"),
+            &json!({"done":{"1":{"id":1}},"failed":{"2":{"id":2,"error":"post failed"}}}),
+        )
+        .unwrap();
+        let spec = json!({"kind":"comment-forward","sourceChat":"source","workDir":work,"exportOnly":true,"delayMs":0,"resume":true,"onlyIds":[2]});
+        e.launch(json!({"taskId":"retry-only-2","spec":spec}))
+            .await
+            .unwrap();
+        assert_eq!(done(&e, "retry-only-2").await["state"], "success");
+        let calls = std::fs::read_to_string(dir.path().join("calls.jsonl")).unwrap();
+        assert_eq!(calls.lines().filter(|s| s.contains("post_1.json")).count(), 0);
+        assert_eq!(calls.lines().filter(|s| s.contains("post_2.json")).count(), 1);
+        let progress = read_json(&work.join("progress.json")).unwrap();
+        assert!(progress["failed"].as_object().unwrap().is_empty());
+        assert!(progress["done"]["2"].is_object());
+    }
+    #[tokio::test]
+    async fn incremental_forward_cleans_up_temp_json() {
+        let (dir, e, _) = fixture();
+        let schedule = json!({"id":"fwd-watch","name":"fwd-watch","type":"forward","args":["forward","--from","placeholder.json","--to","@target"],"enabled":true,"mode":"once","nextRunAt":1,"triggerMode":"chat-update","watchChat":"watch","lastSeenMessageId":10});
+        e.store
+            .update(|d| {
+                d["schedules"] = json!([schedule]);
+                Ok(())
+            })
+            .unwrap();
+        scheduler::execute(e.clone(), "fwd-watch", false).await.unwrap();
+        assert!(!dir.path().join("output").join("incremental_11_12.json").exists());
+        assert_eq!(e.store.snapshot()["schedules"][0]["lastSeenMessageId"], 12);
+    }
+    #[tokio::test]
+    async fn terminal_task_trimming_removes_orphaned_logs() {
+        let (_dir, e, _) = fixture();
+        let logs = e.store.root.join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let seeded: Vec<Value> = (0..100)
+            .map(|i| json!({"id":format!("old-{i}"),"type":"version","state":"success","status":"成功"}))
+            .collect();
+        std::fs::write(logs.join("old-99.log"), "stale log").unwrap();
+        e.store
+            .update(|d| {
+                d["tasks"] = Value::Array(seeded);
+                Ok(())
+            })
+            .unwrap();
+        let outcome = e.launch_wait(json!({"taskId":"new-top","args":["version"]})).await.unwrap();
+        assert_eq!(outcome["state"], "success");
+        assert!(!logs.join("old-99.log").exists());
+    }
     // Run explicitly with HOPETDL_ORIGINAL_ROOT pointing to an untouched
     // Electron checkout. Both implementations execute the same fake tdl binary.
     #[tokio::test]
@@ -893,4 +948,18 @@ fn summary_counts_only_the_selected_message_range() {
     assert_eq!(p["doneCount"], 1);
     assert_eq!(p["totalCount"], 2);
     assert_eq!(p["failedIds"], json!([3]));
+}
+#[test]
+fn store_migrates_missing_schema_version() {
+    let dir = tempfile::tempdir().unwrap();
+    write_json(
+        &dir.path().join("runtime.json"),
+        &json!({"tasks":[],"schedules":[]}),
+    )
+    .unwrap();
+    let store = Store::open(dir.path().into()).unwrap();
+    let snap = store.snapshot();
+    assert_eq!(snap["schemaVersion"], 1);
+    assert_eq!(snap["preferences"], json!({}));
+    assert_eq!(snap["schedulerPaused"], false);
 }

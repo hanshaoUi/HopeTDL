@@ -7,7 +7,7 @@ import CommandPreview from '../../components/CommandPreview.vue'
 import ChatSelect from '../../components/ChatSelect.vue'
 import { appState } from '../../state.js'
 import { chatId as getChatId, chatTitle as getChatTitle, findChatByValue } from '../../chatCache'
-import { dedupeExportRecords, mergeExportRecord, readJson, saveForwardRecord, touchRecentChat, writeJson } from '../../historyStore'
+import { chatKeyCandidates, getExportMemory, mergeExportRecord, normalizeChatKey, saveForwardRecord, setExportMemory, touchRecentChat } from '../../historyStore'
 import { useAppliedRecord, useSelectedChat } from '../../useAppliedRecord'
 import { validateJob } from '../../../shared/validateJob.mjs'
 import { resolveRangeStart } from '../../exportRange'
@@ -38,7 +38,6 @@ const typeOptions = [
   { label: '全部', value: 'all' }
 ]
 
-const HISTORY_KEY = 'hopetdl.export.memory.v1'
 const exportMemory = ref({ last: null, chats: {}, records: [] })
 
 const nsKey = computed(() => String(appState.config?.ns || 'default'))
@@ -50,27 +49,6 @@ const forwardTopicOptions = computed(() => forwardTopics.value.map(topic => ({
   label: `${topic.title || topic.id} / ${topic.id}`,
   value: String(topic.id)
 })))
-
-function normalizeChatKey(value) {
-  const raw = String(value || '').trim()
-  if (!raw) return ''
-  // 兼容 tdl / Telegram 中同一个群有时显示为 174xxx、有时显示为 -174xxx 的情况。
-  // 不处理 @username，只对数字 ID 做符号归一。
-  if (raw.startsWith('@')) return raw.toLowerCase()
-  return raw.replace(/^-/, '')
-}
-
-function chatKeyCandidates(value) {
-  const raw = String(value || '').trim()
-  const normalized = normalizeChatKey(raw)
-  const list = [raw]
-  if (normalized && normalized !== raw) list.push(normalized)
-  if (normalized && !normalized.startsWith('@')) {
-    list.push('-' + normalized)
-    list.push('-100' + normalized)
-  }
-  return Array.from(new Set(list.filter(Boolean)))
-}
 
 function getChatMemory(value) {
   const chats = exportMemory.value.chats || {}
@@ -162,29 +140,12 @@ function handleForwardTargetSelect(row) {
 }
 
 
-// 走 historyStore 的统一读写：那里有解析缓存，
-// 直接操作 localStorage 会让 Chats.vue 等页面读到过期的导出记忆。
-function readAllMemory() {
-  return readJson(HISTORY_KEY, {})
-}
-
-function writeAllMemory(memory) {
-  try {
-    writeJson(HISTORY_KEY, memory)
-  } catch (err) {
-    message.error('保存导出记录失败')
-  }
-}
-
 function copyText(text, successText = '已复制') {
   navigator.clipboard.writeText(String(text || '')).then(() => message.success(successText))
 }
 
 function loadMemory() {
-  const allMemory = readAllMemory()
-  const ns = nsKey.value
-  const memory = allMemory[ns] || { last: null, chats: {}, records: [] }
-  exportMemory.value = { ...memory, records: dedupeExportRecords(memory.records || []) }
+  exportMemory.value = getExportMemory(nsKey.value)
 }
 
 function makeRecord(extra = {}) {
@@ -207,9 +168,7 @@ function makeRecord(extra = {}) {
 }
 
 function saveMemory(record = makeRecord()) {
-  const allMemory = readAllMemory()
-  const ns = nsKey.value
-  const current = allMemory[ns] || { last: null, chats: {}, records: [] }
+  const current = getExportMemory(nsKey.value)
   current.last = record
 
   // type=id / last 时，如果 -i 为空，不覆盖该聊天已有的有效记录。
@@ -223,8 +182,11 @@ function saveMemory(record = makeRecord()) {
 
   current.records = mergeExportRecord(current.records, record)
 
-  allMemory[ns] = current
-  writeAllMemory(allMemory)
+  try {
+    setExportMemory(current, nsKey.value)
+  } catch {
+    message.error('保存导出记录失败')
+  }
   exportMemory.value = current
 }
 

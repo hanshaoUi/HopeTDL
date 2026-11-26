@@ -33,18 +33,14 @@ impl Store {
     pub fn open(root: PathBuf) -> Result<Self> {
         fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         let path = root.join("runtime.json");
-        let mut data = if path.exists() {
+        let existed = path.exists();
+        let mut data = if existed {
             read_json(&path)?
         } else {
             json!({"schemaVersion":1,"revision":0,"tasks":[],"schedules":[],"preferences":{},"schedulerPaused":false})
         };
-        if data["schemaVersion"] != 1
-            || !data["tasks"].is_array()
-            || !data["schedules"].is_array()
-            || !data["preferences"].is_object()
-        {
-            return Err("runtime.json 格式或版本不受支持，请先备份并检查数据".into());
-        }
+        let migrated = migrate_runtime(&mut data)?;
+        let mut recovered = false;
         for task in data["tasks"].as_array_mut().unwrap() {
             if ["running", "queued", "运行中", "排队中"].contains(
                 &task["state"]
@@ -58,9 +54,12 @@ impl Store {
                 task["finishedAt"] = json!(now());
                 task["recoveryReason"] =
                     json!("应用上次退出时任务尚未结束；未自动重放，避免重复转发");
+                recovered = true;
             }
         }
-        write_json(&path, &data)?;
+        if !existed || migrated || recovered {
+            write_json(&path, &data)?;
+        }
         Ok(Self {
             root,
             data: Mutex::new(data),
@@ -123,4 +122,32 @@ impl Store {
         }
         Ok(c)
     }
+}
+
+fn migrate_runtime(data: &mut Value) -> Result<bool> {
+    if !data.is_object() {
+        return Err("runtime.json 格式或版本不受支持，请先备份并检查数据".into());
+    }
+    let mut migrated = false;
+    if data["schemaVersion"].is_null() && data["tasks"].is_array() && data["schedules"].is_array() {
+        data["schemaVersion"] = json!(1);
+        if !data["revision"].is_u64() {
+            data["revision"] = json!(0);
+        }
+        if !data["preferences"].is_object() {
+            data["preferences"] = json!({});
+        }
+        if !data["schedulerPaused"].is_boolean() {
+            data["schedulerPaused"] = json!(false);
+        }
+        migrated = true;
+    }
+    if data["schemaVersion"] != 1
+        || !data["tasks"].is_array()
+        || !data["schedules"].is_array()
+        || !data["preferences"].is_object()
+    {
+        return Err("runtime.json 格式或版本不受支持，请先备份并检查数据".into());
+    }
+    Ok(migrated)
 }

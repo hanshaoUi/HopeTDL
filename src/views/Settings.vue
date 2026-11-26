@@ -113,7 +113,8 @@ async function importMigration() {
           </n-radio-group>
         </n-form-item>
         <n-form-item label="任务日志">
-          <n-switch v-model:value="appState.showLog" ><template #checked>默认展开</template><template #unchecked>收起</template></n-switch>
+          <n-switch v-model:value="appState.showLog" aria-label="任务日志默认展开" />
+          <span class="mini-muted" style="margin-left:10px">{{ appState.showLog ? '默认展开' : '默认收起' }}</span>
         </n-form-item>
       </div>
     </div>

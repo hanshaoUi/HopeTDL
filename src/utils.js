@@ -228,24 +228,33 @@ const pendingRetries = new Map()
 export function retryPending(task) {
   return !!task && (['queued','running'].includes(task.state) || appState.tasks.some(t=>t.retryOf===task.id && ['queued','running'].includes(t.state)))
 }
-export async function retryTask(task) {
+export async function retryTask(task, options = {}) {
   if (!task) return null
   if (pendingRetries.has(task.id)) return pendingRetries.get(task.id)
   if (retryPending(task)) throw new Error('任务仍在运行或排队中')
-  const request=retryTaskOnce(task)
+  const request=retryTaskOnce(task, options)
   pendingRetries.set(task.id,request)
   try {return await request} finally {pendingRetries.delete(task.id)}
 }
-async function retryTaskOnce(task) {
+async function retryTaskOnce(task, options = {}) {
   if (!task) return null
   if (task.spec) {
     const spec = JSON.parse(JSON.stringify(task.spec))
+    let title = task.title || task.type
     if (spec.kind === 'comment-forward' && task.state !== TASK_STATE.SUCCESS && (spec.workDir || task.workDir)) {
       spec.workDir = spec.workDir || task.workDir
       if(window.tdlApi?.nativeRuntime){const p=await window.tdlApi.readCommentForwardProgress(spec.workDir);if(!p.ok && task.startedAt && !['export-list','export-post','filter-post','export-comments','filter-comments','rehearsal'].includes(task.progress?.stage) && !spec.dryRun)throw new Error('缺少有效断点，无法确认已发送范围；请核对结果后新建任务');spec.resume=!!p.ok}else spec.resume = true
       spec.skipExistingExport = true
+      if (options.onlyFailed) {
+        const onlyIds = (Array.isArray(options.failedIds) ? options.failedIds : task.failedIds || [])
+          .map(Number)
+          .filter(id => Number.isSafeInteger(id) && id > 0)
+        if (!onlyIds.length) throw new Error('没有可单独重试的失败消息 ID')
+        spec.onlyIds = onlyIds
+        title = `${title}（重试失败 ${onlyIds.length} 项）`
+      }
     }
-    return runJob(spec, task.title || task.type, { retryOf:task.id, workflowDraft:task.workflowDraft, sourceLabel:task.sourceLabel, targetLabel:task.targetLabel, outputPath:task.outputPath, dryRun:task.dryRun })
+    return runJob(spec, title, { retryOf:task.id, workflowDraft:task.workflowDraft, sourceLabel:task.sourceLabel, targetLabel:task.targetLabel, outputPath:task.outputPath, dryRun:task.dryRun })
   }
   return runTask(task.type, task.args || [], task.title || task.type, {retryOf:task.id})
 }
@@ -481,16 +490,27 @@ export async function createScheduleFromTask(task, options = {}) {
   return schedule
 }
 
-export function updateSchedule(scheduleId, patch = {}) {
-  const schedule = appState.schedules.find(item => item.id === scheduleId)
-  if (!schedule) return null
-  Object.assign(schedule, patch)
-  if (patch.mode || patch.runAt || patch.intervalMinutes) {
-    schedule.nextRunAt = nextRunAfter(schedule, schedule.mode === 'interval' ? Date.now() : 0)
+export async function updateSchedule(scheduleId, patch = {}) {
+  const existing = appState.schedules.find(item => item.id === scheduleId)
+  if (!existing) return null
+  const updated = { ...JSON.parse(JSON.stringify(existing)), ...patch }
+  if (updated.triggerMode === 'chat-update' && (!['export', 'forward'].includes(updated.spec?.kind || updated.type) || !String(updated.watchChat || sourceChatForSpec(updated.spec) || sourceChatFromArgs(updated.args)).trim())) {
+    throw new Error('增量计划需要填写检测来源对话，且仅支持导出或转发')
   }
-  if (window.tdlApi?.nativeRuntime) return window.tdlApi.saveSchedule(schedule).catch(window.tdlApi.reportError)
+  if (updated.enabled && updated.mode === 'once' && !(Number(updated.runAt) > Date.now())) {
+    throw new Error('一次性计划时间已过，请选择未来时间')
+  }
+  if ('mode' in patch || 'runAt' in patch || 'intervalMinutes' in patch || patch.enabled) {
+    updated.nextRunAt = updated.enabled ? nextRunAfter(updated, updated.mode === 'interval' ? Date.now() : 0) : 0
+  }
+  scheduleEvent(updated, 'updated', '计划设置已更新')
+  if (window.tdlApi?.nativeRuntime) {
+    await window.tdlApi.saveSchedule(updated)
+    return updated
+  }
+  Object.assign(existing, updated)
   persistSchedules()
-  return schedule
+  return existing
 }
 
 export function deleteSchedule(scheduleId) {

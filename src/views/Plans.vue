@@ -7,6 +7,7 @@ import {
   commandTextForSpec,
   deleteSchedule,
   toggleSchedule,
+  updateSchedule,
   runScheduledTaskNow,
 } from "../utils";
 import { message, dialog } from "../ui/naive";
@@ -14,14 +15,17 @@ import { toArgs, sourceChatForSpec } from '../../shared/jobSpec.mjs';
 import { validateJob } from '../../shared/validateJob.mjs';
 import AppIcon from "../components/AppIcon.vue";
 const showCreate = ref(false),
+  editingId = ref(null),
+  planName = ref(""),
+  editEnabled = ref(true),
   taskId = ref(null),
   mode = ref("once"),
   minutes = ref(60),
   busy = ref(false),
   draft = ref(null),
   triggerMode = ref("time"), watchChat = ref('');
-function localTime() {
-  const d = new Date(Date.now() + 3600000);
+function localTime(ts = Date.now() + 3600000) {
+  const d = new Date(ts);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 const runAt = ref(localTime());
@@ -36,10 +40,35 @@ const options = computed(() =>
     .filter((t) => t.spec || t.args?.length)
     .map((t) => ({ label: t.title || t.type, value: t.id })),
 );
+const editingSchedule = computed(() => editingId.value ? appState.schedules.find(s => s.id === editingId.value) || null : null);
+function startCreate() {
+  editingId.value = null;
+  planName.value = "";
+  taskId.value = null;
+  mode.value = "once";
+  minutes.value = 60;
+  triggerMode.value = "time";
+  watchChat.value = "";
+  runAt.value = localTime();
+  showCreate.value = true;
+}
+function edit(s) {
+  editingId.value = s.id;
+  planName.value = s.name || s.type || "";
+  editEnabled.value = s.enabled !== false;
+  mode.value = s.mode || "once";
+  minutes.value = Number(s.intervalMinutes || 60);
+  runAt.value = Number(s.runAt) > Date.now() ? localTime(Number(s.runAt)) : localTime();
+  triggerMode.value = s.triggerMode || "time";
+  watchChat.value = s.watchChat || sourceChatForSpec(s.spec) || "";
+  showCreate.value = true;
+}
 watch(
   () => appState.planTaskId,
   (id) => {
     if (id) {
+      editingId.value = null;
+      planName.value = "";
       taskId.value = id;
       showCreate.value = true;
       appState.planTaskId = "";
@@ -53,28 +82,52 @@ watch(() => appState.planDraft, value => {
   try {
   const spec = JSON.parse(JSON.stringify(value.spec));
   validateJob(spec);
+  editingId.value = null;
+  planName.value = "";
   draft.value = {id:'workbench-draft', title:value.title, type:spec.kind, spec, args:['comment-forward','workflow'].includes(spec.kind)?[]:toArgs(spec)};
   taskId.value = draft.value.id;
   triggerMode.value = 'time';
   showCreate.value = true;
   } catch(error) { message.error(error.message); }
 }, {immediate:true});
-const selectedTemplate = computed(() => templates.value.find(t=>t.id===taskId.value));
-watch(selectedTemplate, task => {watchChat.value=sourceChatForSpec(task?.spec)||task?.watchChat||''}, {immediate:true});
-const incrementalAllowed = computed(() => ['export','forward'].includes(templates.value.find(t=>t.id===taskId.value)?.spec?.kind));
+const selectedTemplate = computed(() => editingSchedule.value || templates.value.find(t=>t.id===taskId.value));
+watch(selectedTemplate, task => { if (!editingId.value) watchChat.value=sourceChatForSpec(task?.spec)||task?.watchChat||'' }, {immediate:true});
+const incrementalAllowed = computed(() => ['export','forward'].includes(selectedTemplate.value?.spec?.kind || selectedTemplate.value?.type));
 watch(incrementalAllowed, allowed => {if(!allowed) triggerMode.value='time'});
 function time(v) {
   return v ? new Date(v).toLocaleString() : "—";
 }
 async function save() {
-  const t = templates.value.find((t) => t.id === taskId.value);
-  if (!t) {
-    message.error("请选择一个已有任务作为模板");
-    return;
-  }
   const at = new Date(runAt.value).getTime();
   if (mode.value === "once" && (!at || at <= Date.now())) {
     message.error("请选择未来的执行时间");
+    return;
+  }
+  if (editingId.value) {
+    busy.value = true;
+    try {
+      await updateSchedule(editingId.value, {
+        name: planName.value.trim() || editingSchedule.value?.name || editingSchedule.value?.type,
+        mode: mode.value,
+        runAt: at,
+        intervalMinutes: minutes.value,
+        triggerMode: triggerMode.value,
+        watchChat: watchChat.value.trim(),
+        enabled: editEnabled.value,
+      });
+      showCreate.value = false;
+      editingId.value = null;
+      message.success("计划已更新");
+    } catch (e) {
+      message.error(String(e?.message || e));
+    } finally {
+      busy.value = false;
+    }
+    return;
+  }
+  const t = templates.value.find((t) => t.id === taskId.value);
+  if (!t) {
+    message.error("请选择一个已有任务作为模板");
     return;
   }
   busy.value = true;
@@ -90,7 +143,7 @@ async function save() {
     showCreate.value = false;
     message.success("计划已创建");
   } catch (e) {
-    message.error(String(e));
+    message.error(String(e?.message || e));
   } finally {
     busy.value = false;
   }
@@ -143,15 +196,7 @@ function remove(s) {
         <p>定时执行任务，或在频道更新后自动处理。</p>
       </div>
       <div class="action-row">
-        <button
-          v-if="appState.schedules.length"
-          class="secondary-button"
-          @click="pause"
-        >
-          {{
-            appState.schedulerPaused ? "恢复所有计划" : "暂停所有计划"
-          }}</button
-        ><button class="primary-button" @click="showCreate = true">
+        <button class="primary-button" @click="startCreate">
           <AppIcon name="plus" :size="17" />新建计划
         </button>
       </div>
@@ -163,12 +208,12 @@ function remove(s) {
           : "应用在后台运行时会按时执行；关闭主窗口不影响计划，退出应用后停止检测。"
       }}</span>
     </div>
-    <div class="sched-status"><span class="sched-dot" :class="{paused:appState.schedulerPaused}" />{{appState.schedulerPaused?'调度器已暂停':'调度器运行中'}} · {{appState.schedules.filter(s=>s.enabled).length}} 个启用的计划<button class="btn sm ghost" @click="pause">{{appState.schedulerPaused?'恢复':'暂停全部'}}</button></div>
+    <div class="sched-status"><span class="sched-dot" :class="{paused:appState.schedulerPaused}" />{{appState.schedulerPaused?'调度器已暂停':'调度器运行中'}} · {{appState.schedules.filter(s=>s.enabled).length}} 个启用的计划<button v-if="appState.schedules.length" class="btn sm ghost" @click="pause">{{appState.schedulerPaused?'恢复所有计划':'暂停所有计划'}}</button></div>
     <div v-if="!appState.schedules.length" class="flow-empty">
       <AppIcon name="calendar" :size="38" />
       <h2>把确认过的流程安排到稍后</h2>
       <p>选择任务队列中的一个任务作为模板，设置执行时间即可。</p>
-      <button class="primary-button" @click="showCreate = true">
+      <button class="primary-button" @click="startCreate">
         创建第一个计划
       </button>
     </div>
@@ -202,6 +247,7 @@ function remove(s) {
         <div class="action-row">
           <button class="text-action" @click="toggle(s)">
             {{ s.enabled ? "停用" : "启用" }}</button
+          ><button class="text-action" @click="edit(s)">编辑</button
           ><button class="text-action" @click="run(s)">立即运行</button
           ><button class="text-action muted-action" @click="remove(s)">
             删除
@@ -216,9 +262,13 @@ function remove(s) {
         aria-modal="true"
         aria-labelledby="plan-title"
       >
-        <h2 id="plan-title">安排一个流程</h2>
+        <h2 id="plan-title">{{ editingId ? "编辑计划" : "安排一个流程" }}</h2>
         <p class="section-help">沿用任务的来源、目标、范围和演练设置。</p>
-        <div class="field-stack">
+        <div v-if="editingId" class="field-stack">
+          <label for="plan-name-input">计划名称</label
+          ><input id="plan-name-input" v-model="planName" placeholder="计划名称" />
+        </div>
+        <div v-else class="field-stack">
           <label>选择任务模板</label
           ><n-select
             v-model:value="taskId"
@@ -228,7 +278,7 @@ function remove(s) {
             filterable
           />
         </div>
-        <div v-if="!options.length" class="workflow-note">
+        <div v-if="!editingId && !options.length" class="workflow-note">
           还没有可用的任务。请先在工作台确认并执行一次流程。
         </div>
         <div v-if="selectedTemplate" class="plan-template-summary"><span class="dry-badge">{{selectedTemplate.spec?.dryRun?'演练 · 不发送':selectedTemplate.spec?.exportOnly?'仅导出':(['forward','comment-forward','upload'].includes(selectedTemplate.type)?'实际发送':'本地保存')}}</span><p class="mini-muted">沿用以下参数执行，请确认来源、目标和范围。</p><pre class="command-preview">{{selectedTemplate.spec?.kind==='comment-forward'?`${selectedTemplate.spec.sourceChat} → ${selectedTemplate.spec.targetChat||'本地'} · ${selectedTemplate.spec.startId||'起'} — ${selectedTemplate.spec.endId||'止'} · ${selectedTemplate.spec.mode||'direct'}`:selectedTemplate.spec?commandTextForSpec(selectedTemplate.spec):selectedTemplate.args?.join(' ')}}</pre></div>
@@ -243,7 +293,7 @@ function remove(s) {
         </div>
         <div v-if="incrementalAllowed" class="field-stack"><label>触发方式</label><n-radio-group v-model:value="triggerMode"><n-radio-button value="time">到点执行</n-radio-button><n-radio-button value="chat-update">频道有更新才执行</n-radio-button></n-radio-group></div>
         <div v-if="incrementalAllowed && triggerMode==='chat-update'" class="field-stack"><label for="plan-watch-chat">检测来源对话</label><input id="plan-watch-chat" v-model="watchChat" class="field-input" placeholder="源频道 / 群组 ID 或 @用户名" /><p class="field-help">检测此来源的新消息，再导出增量范围；转发目标沿用任务模板。</p></div>
-        <div v-if="draft && taskId===draft.id" class="workflow-note">当前表单草稿 · 未执行。创建计划后会按当前演练 / 正式设置运行。</div>
+        <div v-if="!editingId && draft && taskId===draft.id" class="workflow-note">当前表单草稿 · 未执行。创建计划后会按当前演练 / 正式设置运行。</div>
         <div v-if="mode === 'once'" class="field-stack">
           <label for="plan-time">执行时间</label
           ><input id="plan-time" v-model="runAt" type="datetime-local" />
@@ -255,16 +305,19 @@ function remove(s) {
             每次会重跑模板指定的范围。需要断点续跑时，请先在模板中选择原工作目录并启用续跑。
           </p>
         </div>
+        <div v-if="editingId" class="field-stack">
+          <label><input type="checkbox" v-model="editEnabled" style="width:auto;height:auto;margin-right:6px" />保存后启用该计划</label>
+        </div>
         <div class="flow-actions">
           <button type="button" class="secondary-button" @click="showCreate = false">
             取消</button
           ><button
             type="button"
             class="primary-button"
-            :disabled="busy || !taskId"
+            :disabled="busy || (!editingId && !taskId)"
             @click="save"
           >
-            {{ busy ? "正在保存…" : "创建计划" }}
+            {{ busy ? "正在保存…" : editingId ? "保存修改" : "创建计划" }}
           </button>
         </div>
       </section>

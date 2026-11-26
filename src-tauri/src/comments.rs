@@ -257,11 +257,6 @@ impl Worker<'_> {
             false,
         )
         .await?;
-        // Dry-run still obtains the real list, but must not fabricate per-post
-        // checkpoints that would cause a later real run to skip messages.
-        if self.c["dryRun"] == true {
-            return Ok(());
-        }
         self.progress(index, total, id, "filter-post");
         let pf = self.filter.file(
             &post,
@@ -417,9 +412,16 @@ pub async fn run(
     if c["desc"] == true {
         ids.reverse();
     }
+    let only_ids: Option<std::collections::HashSet<u64>> = c["onlyIds"].as_array().and_then(|arr| {
+        let set: std::collections::HashSet<u64> = arr.iter().filter_map(|v| v.as_u64()).collect();
+        (!set.is_empty()).then_some(set)
+    });
     for (index, post_id) in ids.iter().enumerate() {
         if token.is_cancelled() {
             return Err("任务已停止".into());
+        }
+        if only_ids.as_ref().is_some_and(|set| !set.contains(post_id)) {
+            continue;
         }
         let key = post_id.to_string();
         if !progress["done"][&key].is_null() {

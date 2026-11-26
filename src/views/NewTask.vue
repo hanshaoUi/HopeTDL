@@ -30,8 +30,23 @@ const windowApiFile = !!window.tdlApi?.readFilterSample
 const filterAvailable = !!window.tdlApi?.previewFilter
 const sample = ref(''), sampleResult = ref(null), sampleBusy = ref(false)
 let sampleRevision = 0
+const sampleSourceFile = computed(() => {
+  const s = spec.value
+  const candidate = s?.from || s?.output || s?.steps?.[0]?.output || ''
+  return candidate && !String(candidate).includes('<') && /\.json$/i.test(String(candidate)) ? String(candidate) : ''
+})
+async function loadSampleFile(file) {
+  try {
+    const json = await window.tdlApi.readFilterSample(file)
+    sample.value = JSON.stringify(json, null, 2)
+    await nextTick()
+    await previewFilter()
+  } catch (error) {
+    message.error(String(error))
+  }
+}
 async function loadSample() {
-  try{const file=await window.tdlApi?.openFile({filters:[{name:'JSON',extensions:['json']}]});if(!file)return;const json=await window.tdlApi.readFilterSample(file);sample.value=JSON.stringify(json,null,2);await nextTick();await previewFilter()}catch(error){message.error(String(error))}
+  try { const file = await window.tdlApi?.openFile({ filters: [{ name: 'JSON', extensions: ['json'] }] }); if (file) await loadSampleFile(file) } catch (error) { message.error(String(error)) }
 }
 async function previewFilter() {
   if(!window.tdlApi?.previewFilter)return
@@ -146,7 +161,7 @@ function plan() {
       <section v-if="['commentForward','forward'].includes(current.key)" class="filter-preview">
         <div class="filter-preview-head">过滤预览<span>{{spec?.blockKeywordsText?'本任务规则':'全局规则'}}</span></div>
         <div class="filter-rules-summary"><template v-if="spec?.blockKeywordsText"><span class="filter-tag block">屏蔽词</span><p>{{spec.blockKeywordsText}}</p></template><template v-if="appState.config.forwardFilterEnabled"><p>全局过滤已启用</p><p v-if="appState.config.filterKeywordsText">{{appState.config.filterKeywordsText}}</p><p v-if="appState.config.removeLinks">移除链接</p><p v-if="appState.config.blockImages">过滤图片</p><p v-if="appState.config.blockVideos">过滤视频</p><p v-if="appState.config.blockTextOnly">过滤纯文本</p></template><p v-else-if="!spec?.blockKeywordsText">未启用关键词或类型过滤</p><p v-if="!sampleResult" class="mini-muted">尚未载入消息样本；真实命中数量以执行结果为准。</p><p v-else class="mini-muted">结果仅适用于粘贴样本，频道实际消息以执行结果为准。</p></div>
-        <div class="filter-rules-summary"><label for="filter-sample">粘贴测试文本或导出 JSON</label><button class="btn sm" :disabled="!filterAvailable||!windowApiFile" @click="loadSample">读取 JSON 样本</button><textarea id="filter-sample" v-model="sample" class="sandbox-input" placeholder="样本仅用于本地过滤，不发送消息" /><button class="btn sm" :disabled="!sample.trim()||sampleBusy||!filterAvailable" @click="previewFilter">{{sampleBusy?'计算中…':'测试过滤'}}</button><p v-if="!filterAvailable" class="mini-muted">请在 Rust 应用中使用原生过滤预览。</p><template v-if="sampleResult"><p>保留 {{sampleResult.count}} 条 · 删除 {{sampleResult.removed}} 条 · 移除链接 {{sampleResult.linksRemoved}} 处</p><pre class="filter-result">{{JSON.stringify(sampleResult.json,null,2)}}</pre></template></div>
+        <div class="filter-rules-summary"><label for="filter-sample">粘贴测试文本或导出 JSON</label><div class="action-row"><button class="btn sm" :disabled="!filterAvailable||!windowApiFile" @click="loadSample">选择 JSON 样本</button><button v-if="sampleSourceFile" class="btn sm" :disabled="!filterAvailable||!windowApiFile" @click="loadSampleFile(sampleSourceFile)">读取当前文件</button></div><textarea id="filter-sample" v-model="sample" class="sandbox-input" placeholder="样本仅用于本地过滤，不发送消息" /><button class="btn sm" :disabled="!sample.trim()||sampleBusy||!filterAvailable" @click="previewFilter">{{sampleBusy?'计算中…':'测试过滤'}}</button><p v-if="!filterAvailable" class="mini-muted">请在 Rust 应用中使用原生过滤预览。</p><template v-if="sampleResult"><p>保留 {{sampleResult.count}} 条 · 删除 {{sampleResult.removed}} 条 · 移除链接 {{sampleResult.linksRemoved}} 处</p><pre class="filter-result">{{JSON.stringify(sampleResult.json,null,2)}}</pre></template></div>
       </section>
       <section class="preview-box"><div class="preview-head">本次任务</div><dl class="preview-facts"><dt>账号空间</dt><dd>{{appState.config.ns||'hope'}}</dd><template v-if="sourceChatForSpec(spec)"><dt>来源</dt><dd>{{sourceChatForSpec(spec)}}</dd></template><template v-if="targetChatForSpec(spec)"><dt>目标</dt><dd>{{targetChatForSpec(spec)}}</dd></template><dt>操作</dt><dd>{{current.title}}</dd><dt>执行顺序</dt><dd>{{current.key==='commentForward'?'主消息 → 评论 → 下一条':workflowSteps.length?workflowSteps.map(s=>s.kind).join(' → '):'按表单参数执行'}}</dd></dl></section>
     </div></aside>
